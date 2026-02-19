@@ -205,3 +205,75 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ============================================================
+# Project-specific: camelot_from_youtube
+# ============================================================
+
+# Audio files (large, not source code)
+*.mp3
+*.wav
+*.flac
+*.weba
+*.webm
+*.opus
+*.ogg
+
+# Per-track project directories (contain analysis caches + audio)
+# These are generated/user data, not source code
+Alone (Extended Mix)/
+Below The Belt (Chris Micali Remix)/
+Kasablanca - Am I Dreaming？ (@Kasablanca)/
+Lady Danger (Mixed)/
+LTN - Daylight (Original Mix) [[]Enhanced Progressive[]]/
+Marsh feat. Mimi Page - Foss (Official Music Video)/
+Martin Roth - Deep Style (Original Mix)/
+Orbital - Otoño/
+Quivver - Brothers & Sisters (Original Mix)/
+Ronski Speed & Syntrobic feat. Renee Stahl-Pink Skye/
+You Are Sleeping (PQM Meets Luke Chable Vocal Pass)/
+Waves/
+NL123D/
+NothingLeft1+2/
+NothingLeft1+2_bar400-bar445/
+Test/
+Viz/
+breeder/
+dynamic/
+nothingleft/
+nul/
+
+# Stem separation outputs
+*_stems/
+*_out/
+
+# Demucs environment (separate from env1)
+env_demucs/
+
+# Additional venvs
+env1/
+
+# Backup files
+*.bak
+*.bak2
+*.bak3
+
+# Generated/temp files
+events_detected.json
+ui_test_stderr.txt
+ui_test_stdout.txt
+
+# Rekordbox export (generated output)
+rekordbox_collection.xml
+
+# Claude Code project config
+.claude/
+
+# Visual Studio project files
+*.pyproj
+*.sln
+*.sln.docstates
+*.suo
+*.user
+.vs/
+.vscode/
