@@ -47,6 +47,9 @@ from event_detect import (
     detect_feature_events, normalize_feature,
     compute_summary as event_compute_summary,
 )
+from spectral_analysis import (
+    compute_bar_spectra, compute_spectral_summary, NOISE_FLOOR_DB,
+)
 
 import pygame
 
@@ -864,6 +867,11 @@ class AnalysisStore:
         self.event_mode = None
         self.event_summary = None
         self.event_extra = {}
+        # Spectrum
+        self.bar_spectra = None       # np.ndarray (n_bars, n_bands) dB
+        self.band_centers = None      # np.ndarray (n_bands,) Hz
+        self.band_edges = None        # np.ndarray (n_bands, 2) Hz
+        self.spectral_summary = None  # dict
         # Version counter
         self.version = 0
 
@@ -878,6 +886,10 @@ class AnalysisStore:
     @property
     def has_events(self):
         return self.events is not None
+
+    @property
+    def has_spectrum(self):
+        return self.bar_spectra is not None
 
     def store_bpm(self, r):
         self.y = r["y"]
@@ -943,6 +955,13 @@ class AnalysisStore:
                             if k in r}
         self.version += 1
 
+    def store_spectrum(self, r):
+        self.bar_spectra = r["bar_spectra"]
+        self.band_centers = r["band_centers"]
+        self.band_edges = r["band_edges"]
+        self.spectral_summary = r["summary"]
+        self.version += 1
+
     # -- persistence -----------------------------------------------------
 
     def save(self, project_dir):
@@ -959,6 +978,10 @@ class AnalysisStore:
             arrays["y_ds"] = self.y_ds
         if self.t_ds is not None:
             arrays["t_ds"] = self.t_ds
+        if self.bar_spectra is not None:
+            arrays["bar_spectra"] = self.bar_spectra
+            arrays["band_centers"] = self.band_centers
+            arrays["band_edges"] = self.band_edges
         if arrays:
             np.savez_compressed(str(d / "analysis_cache.npz"), **arrays)
 
@@ -1025,6 +1048,10 @@ class AnalysisStore:
                 ev_data["event_extra"] = se
             data["events_block"] = ev_data
 
+        # Spectrum
+        if self.has_spectrum:
+            data["spectrum"] = {"spectral_summary": self.spectral_summary}
+
         # Metadata for cache validation
         data["_audio_name"] = getattr(self, "_audio_name", None)
 
@@ -1090,6 +1117,15 @@ class AnalysisStore:
                 self.event_summary = ev_block["event_summary"]
                 self.event_extra = ev_block.get("event_extra", {})
 
+            # Spectrum data
+            if "bar_spectra" in npz:
+                self.bar_spectra = npz["bar_spectra"]
+                self.band_centers = npz["band_centers"]
+                self.band_edges = npz["band_edges"]
+                spec_block = data.get("spectrum")
+                if spec_block:
+                    self.spectral_summary = spec_block.get("spectral_summary")
+
             # Recompute loudness if not in cache (backward compat)
             if self.loudness_dbfs is None and self.y is not None:
                 self._compute_loudness()
@@ -1117,6 +1153,7 @@ CHART_PERC_ONSET = "Perc Onset"
 CHART_HARM_ONSET = "Harm Onset"
 CHART_RMS_ENERGY = "RMS Energy"
 CHART_CHANGE_SCORE = "Change Score"
+CHART_SPECTRAL = "Spectral"
 # Stem charts (dynamic names)
 _STEM_PREFIX = "Stem: "  # e.g. "Stem: drums", "Stem: bass"
 
@@ -1125,6 +1162,7 @@ _GROUP_BPM = [CHART_BPM_SPAN]
 _GROUP_KEY = [CHART_KEY_TIMELINE, CHART_KEY_CONFIDENCE]
 _GROUP_EVENTS_FEATURES = [CHART_PERC_ONSET, CHART_HARM_ONSET,
                           CHART_RMS_ENERGY, CHART_CHANGE_SCORE]
+_GROUP_SPECTRUM = [CHART_SPECTRAL]
 
 
 class ChartBuilder:
@@ -1154,6 +1192,8 @@ class ChartBuilder:
                     out.append(f"{_STEM_PREFIX}{stem}")
             else:
                 out.extend(_GROUP_EVENTS_FEATURES)
+        if s.has_spectrum:
+            out.extend(_GROUP_SPECTRUM)
         return out
 
     def get(self, name):
@@ -1209,6 +1249,8 @@ class ChartBuilder:
         if name.startswith(_STEM_PREFIX) and s.has_events:
             stem = name[len(_STEM_PREFIX):]
             return self._build_stem_energy(stem)
+        if name == CHART_SPECTRAL and s.has_spectrum:
+            return self._build_spectral()
         return None
 
     # -- helpers ---------------------------------------------------------
@@ -1562,6 +1604,42 @@ class ChartBuilder:
         ax.tick_params(labelsize=8)
         return fig
 
+    def _build_spectral(self):
+        """Heatmap of per-bar spectral energy (third-octave bands)."""
+        s = self.store
+        fig, ax = self._make_fig(4.0)
+
+        spectra = s.bar_spectra       # (n_bars, n_bands)
+        edges = s.band_edges          # (n_bands, 2)
+
+        # Build time edges from measures
+        bar_times = [(m["start"], m["end"]) for m in s.measures]
+        t_edges = [bar_times[0][0]] + [t[1] for t in bar_times]
+        # Build frequency edges from band edges
+        f_edges = [edges[0, 0]] + [edges[i, 1] for i in range(len(edges))]
+
+        T, F = np.meshgrid(t_edges, f_edges)
+        pcm = ax.pcolormesh(T, F, spectra.T, shading="flat", cmap="inferno",
+                            vmin=NOISE_FLOOR_DB, vmax=0)
+        ax.set_yscale("log")
+        ax.set_ylim(20, 20000)
+        ax.set_yticks([50, 100, 200, 500, 1000, 2000, 5000, 10000])
+        ax.set_yticklabels(["50", "100", "200", "500", "1k", "2k",
+                            "5k", "10k"])
+
+        self._add_event_lines(ax, y_frac=0.96, label=True)
+        self._add_markers(ax)
+
+        cb = fig.colorbar(pcm, ax=ax, pad=0.02)
+        cb.set_label("dB", fontsize=9)
+
+        ax.set_xlim(0, s.duration)
+        ax.set_xlabel("Time (seconds)", fontsize=9)
+        ax.set_ylabel("Frequency (Hz)", fontsize=9)
+        ax.set_title(f"Spectral Energy  - {self._audio_name()}", fontsize=10)
+        ax.tick_params(labelsize=8)
+        return fig
+
 
 # =========================================================================
 # Layer 3: AudioAnalysisApp — slim tkinter UI
@@ -1659,6 +1737,10 @@ class AudioAnalysisApp:
                                       command=self._run_events,
                                       state="disabled")
         self.btn_events.pack(side="left", padx=2)
+        self.btn_spectrum = ttk.Button(tb, text="Run Spectrum",
+                                        command=self._run_spectrum,
+                                        state="disabled")
+        self.btn_spectrum.pack(side="left", padx=2)
         ttk.Separator(tb, orient="vertical").pack(side="left", fill="y",
                                                     padx=6)
         self.btn_all = ttk.Button(tb, text="Run All",
@@ -1983,6 +2065,8 @@ class AudioAnalysisApp:
                 group = "bpm"
             elif n in _GROUP_KEY:
                 group = "key"
+            elif n in _GROUP_SPECTRUM:
+                group = "spectrum"
             else:
                 group = "events"
             if prev_group and group != prev_group:
@@ -2206,7 +2290,8 @@ class AudioAnalysisApp:
         self.root.update_idletasks()
 
     def _set_analysis_btns(self, state):
-        for b in (self.btn_bpm, self.btn_key, self.btn_events, self.btn_all):
+        for b in (self.btn_bpm, self.btn_key, self.btn_events,
+                  self.btn_spectrum, self.btn_all):
             b.config(state=state)
 
     def _run_in_thread(self, fn, callback, msg):
@@ -2403,6 +2488,43 @@ class AudioAnalysisApp:
         self._update_info()
 
     # ------------------------------------------------------------------
+    # Spectrum
+    # ------------------------------------------------------------------
+
+    def _run_spectrum(self):
+        if not self.store.has_bpm:
+            messagebox.showinfo("Info", "Run BPM first.")
+            return
+
+        def do():
+            s = self.store
+            r = compute_bar_spectra(s.y, s.sr, s.measures)
+            summary = compute_spectral_summary(r)
+            return {"bar_spectra": r["bar_spectra"],
+                    "band_centers": r["band_centers"],
+                    "band_edges": r["band_edges"],
+                    "summary": summary}
+
+        self._run_in_thread(do, self._on_spectrum,
+                            "Running Spectral analysis...")
+
+    def _on_spectrum(self, r):
+        self.store.store_spectrum(r)
+        self.builder.invalidate(CHART_SPECTRAL)
+        self._invalidate_chart_widgets(CHART_SPECTRAL)
+        self._update_view_selector()
+        self._show_waveform()
+        try:
+            self.store.save(self.project_dir)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"Cache save error: {e}", file=sys.stderr)
+        summary = r["summary"]
+        self._set_status(f'Spectrum: {summary["energy_profile"]}')
+        self._update_info()
+
+    # ------------------------------------------------------------------
     # Run All
     # ------------------------------------------------------------------
 
@@ -2422,6 +2544,13 @@ class AudioAnalysisApp:
                 self.root.after(200, after_key)
             else:
                 self._run_events()
+                self.root.after(200, after_events)
+
+        def after_events():
+            if not self.store.has_events:
+                self.root.after(200, after_events)
+            else:
+                self._run_spectrum()
 
         self._run_bpm()
         self.root.after(300, after_bpm)

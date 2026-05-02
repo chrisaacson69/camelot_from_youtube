@@ -228,6 +228,7 @@ Lady Danger (Mixed)/
 LTN - Daylight (Original Mix) [[]Enhanced Progressive[]]/
 Marsh feat. Mimi Page - Foss (Official Music Video)/
 Martin Roth - Deep Style (Original Mix)/
+Simon Doty - Lady Danger (Extended Mix)/
 Orbital - Otoño/
 Quivver - Brothers & Sisters (Original Mix)/
 Ronski Speed & Syntrobic feat. Renee Stahl-Pink Skye/
@@ -262,6 +263,9 @@ env1/
 events_detected.json
 ui_test_stderr.txt
 ui_test_stdout.txt
+
+# Analysis plots
+*.png
 
 # Rekordbox export (generated output)
 rekordbox_collection.xml

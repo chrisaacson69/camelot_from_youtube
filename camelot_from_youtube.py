@@ -1971,7 +1971,8 @@ def timeline_analysis(path: str, sr: int, bpm: float,
                       bpm_info: Dict[str, Any] = None,
                       use_dynamic_segments: bool = True,
                       detect_micro: bool = True,
-                      micro_bars: int = 2) -> Dict[str, Any]:
+                      micro_bars: int = 2,
+                      classify_rhythm_flag: bool = True) -> Dict[str, Any]:
     """
     Full timeline analysis of a track.
 
@@ -2041,6 +2042,49 @@ def timeline_analysis(path: str, sr: int, bpm: float,
             bars_per_micro=micro_bars
         )
 
+    # Rhythmic pattern classification (per-bar kick analysis)
+    rhythm_data = None
+    if classify_rhythm_flag and beat_times and len(beat_times) >= 8:
+        try:
+            from rhythm_detect import classify_rhythm, summarize_rhythm, summarize_rhythm_sections
+
+            # Build 1-bar measures from beat grid
+            bar_measures = []
+            beats_per_bar_int = int(beats_per_bar)
+            beat_idx = first_downbeat_idx
+            bar_num = 0
+            while beat_idx + beats_per_bar_int < len(beat_times):
+                bar_start_time = beat_times[beat_idx]
+                bar_end_idx = beat_idx + beats_per_bar_int
+                bar_end_time = beat_times[bar_end_idx] if bar_end_idx < len(beat_times) else bar_start_time + median_beat_interval * beats_per_bar_int
+                bar_measures.append({
+                    "measure_num": bar_num,
+                    "start": bar_start_time,
+                    "end": bar_end_time,
+                })
+                beat_idx = bar_end_idx
+                bar_num += 1
+
+            if bar_measures:
+                # Load full audio for rhythm analysis
+                y_full, _ = librosa.load(path, sr=sr, mono=True)
+                bar_rhythms = classify_rhythm(
+                    y_full, sr, bar_measures,
+                    beat_interval=median_beat_interval or (60.0 / bpm),
+                    beats_per_bar=beats_per_bar_int
+                )
+                rhythm_summary = summarize_rhythm(bar_rhythms)
+                rhythm_sections = summarize_rhythm_sections(bar_rhythms, bar_measures)
+                rhythm_data = {
+                    "summary": rhythm_summary,
+                    "sections": rhythm_sections,
+                    "per_bar": bar_rhythms,
+                }
+                print(f"Rhythm classification: {rhythm_summary['dominant_pattern']} "
+                      f"({len(bar_rhythms)} bars)", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Rhythm classification failed: {e}", file=sys.stderr)
+
     # Merge to reduce noise
     timeline = merge_timeline_segments(
         raw_segments,
@@ -2063,6 +2107,9 @@ def timeline_analysis(path: str, sr: int, bpm: float,
         "micro_events": micro_events,
         "raw_segments": raw_segments
     }
+
+    if rhythm_data:
+        result["rhythm"] = rhythm_data
 
     # Include beat grid info if available
     if bpm_info:
@@ -2087,7 +2134,7 @@ def timeline_analysis(path: str, sr: int, bpm: float,
 def main():
     ap = argparse.ArgumentParser(description="Estimate musical key + Camelot from audio (single or strict consensus).")
 
-    ap.add_argument("--audio", required=True, help="Path to local audio file (WAV/MP3/FLAC recommended).")
+    ap.add_argument("--audio", required=False, help="Path to local audio file (WAV/MP3/FLAC recommended). Required unless --compare.")
     ap.add_argument("--sr", type=int, default=22050, help="Sample rate for analysis (default: 22050).")
 
     ap.add_argument("--start", type=float, default=90.0, help="Start time for single-window analysis (seconds).")
@@ -2131,6 +2178,41 @@ def main():
     ap.add_argument("--yt-api-key", default=os.environ.get("YT_API_KEY"),
                     help="YouTube Data API key (optional; defaults to YT_API_KEY env var).")
 
+    # Rhythm classification
+    ap.add_argument("--no-rhythm", action="store_true",
+                    help="Skip rhythmic pattern classification in timeline mode.")
+
+    # Two-track comparison mode
+    compare_group = ap.add_argument_group("Two-track comparison (--compare)")
+    compare_group.add_argument("--compare", action="store_true",
+        help="Run collision + phase alignment between two tracks.")
+    compare_group.add_argument("--audio-a",
+        help="Path to Track A audio file (for --compare).")
+    compare_group.add_argument("--bars-a",
+        help="Bar range for Track A (e.g. '216-240').")
+    compare_group.add_argument("--audio-b",
+        help="Path to Track B audio file (for --compare).")
+    compare_group.add_argument("--bars-b",
+        help="Bar range for Track B (e.g. '0-24').")
+    compare_group.add_argument("--analysis-a",
+        help="Track A analysis cache dir (has analysis_cache.npz). If omitted, computes on the fly.")
+    compare_group.add_argument("--analysis-b",
+        help="Track B analysis cache dir. If omitted, computes on the fly.")
+    compare_group.add_argument("--bpm-a", type=float,
+        help="Track A BPM (for phase alignment).")
+    compare_group.add_argument("--bpm-b", type=float,
+        help="Track B BPM (for phase alignment).")
+    compare_group.add_argument("--first-beat-a", type=int,
+        help="Track A first_beat_sample (for phase alignment).")
+    compare_group.add_argument("--first-beat-b", type=int,
+        help="Track B first_beat_sample (for phase alignment).")
+    compare_group.add_argument("--min-gap-db", type=float, default=10.0,
+        help="Minimum dB gap for spectral gap detection (default: 10).")
+    compare_group.add_argument("--max-offset-ms", type=float, default=100.0,
+        help="Maximum phase offset search window in ms (default: 100).")
+    compare_group.add_argument("--save-collision-plot",
+        help="Save collision heatmap to PNG.")
+
     # Output
     ap.add_argument("--json-out", help="Write JSON output to a file.")
     ap.add_argument("--plot", choices=["summary", "detailed", "both"],
@@ -2139,12 +2221,17 @@ def main():
 
     args = ap.parse_args()
 
+    # --compare mode doesn't need --audio
+    if not args.compare and not args.audio:
+        raise SystemExit("--audio is required unless using --compare mode.")
+
     audio_path = args.audio
-    ext = Path(audio_path).suffix.lower()
-    if ext in UNSUPPORTED_HINT_EXTS:
-        raise SystemExit(
-            f"Input format {ext} often requires ffmpeg. Convert to WAV/MP3/FLAC and re-run."
-        )
+    if audio_path:
+        ext = Path(audio_path).suffix.lower()
+        if ext in UNSUPPORTED_HINT_EXTS:
+            raise SystemExit(
+                f"Input format {ext} often requires ffmpeg. Convert to WAV/MP3/FLAC and re-run."
+            )
 
     yt_meta = {}
     if args.url and args.yt_api_key:
@@ -2294,8 +2381,108 @@ def main():
             min_confidence=float(args.min_confidence),
             min_stable_segments=args.min_stable_segments,
             bpm_info=enhanced_bpm_info,
-            use_dynamic_segments=use_dynamic_segments
+            use_dynamic_segments=use_dynamic_segments,
+            classify_rhythm_flag=not getattr(args, 'no_rhythm', False)
         )
+
+    elif args.compare:
+        # Two-track comparison mode: collision + phase alignment
+        if not args.audio_a or not args.audio_b:
+            raise SystemExit("--compare requires --audio-a and --audio-b")
+
+        result["analysis"] = {"type": "compare"}
+
+        compare_result = {}
+
+        # Collision analysis (requires analysis caches or bar ranges)
+        if args.analysis_a and args.analysis_b and args.bars_a and args.bars_b:
+            try:
+                from collision import (load_track_spectra, compute_collision,
+                                       find_spectral_gaps, generate_eq_recommendations,
+                                       collision_report as make_collision_report,
+                                       collision_to_json, plot_collision)
+
+                print(f"Loading Track A spectra: {args.analysis_a}", file=sys.stderr)
+                data_a = load_track_spectra(args.analysis_a)
+                print(f"  {data_a['name']} -- {data_a['bar_spectra'].shape[0]} bars", file=sys.stderr)
+
+                print(f"Loading Track B spectra: {args.analysis_b}", file=sys.stderr)
+                data_b = load_track_spectra(args.analysis_b)
+                print(f"  {data_b['name']} -- {data_b['bar_spectra'].shape[0]} bars", file=sys.stderr)
+
+                col = compute_collision(data_a, data_b, args.bars_a, args.bars_b,
+                                        track_a_data=data_a, track_b_data=data_b)
+                gaps = find_spectral_gaps(data_a, data_b, args.bars_a, args.bars_b,
+                                          track_a_data=data_a, track_b_data=data_b,
+                                          min_gap_db=args.min_gap_db)
+                eq_recs = generate_eq_recommendations(gaps, col,
+                                                      data_a["name"], data_b["name"])
+
+                report = make_collision_report(col, gaps, data_a["name"], data_b["name"],
+                                               eq_recs=eq_recs)
+                print(f"\n{report}", file=sys.stderr)
+
+                compare_result["collision"] = collision_to_json(
+                    col, gaps, eq_recs,
+                    data_a["name"], data_b["name"],
+                    args.bars_a, args.bars_b
+                )
+
+                if args.save_collision_plot:
+                    plot_collision(col, gaps, data_a["name"], data_b["name"],
+                                  save_path=args.save_collision_plot)
+
+            except Exception as e:
+                print(f"Warning: Collision analysis failed: {e}", file=sys.stderr)
+                compare_result["collision_error"] = str(e)
+
+        # Phase alignment (requires audio files + BPM + first_beat_sample)
+        if (args.bpm_a and args.bpm_b and
+                args.first_beat_a is not None and args.first_beat_b is not None and
+                args.bars_a and args.bars_b):
+            try:
+                from alignment import multi_probe_alignment, alignment_to_json
+
+                print(f"\nLoading Track A audio: {args.audio_a}", file=sys.stderr)
+                y_a, _sr = librosa.load(args.audio_a, sr=int(args.sr), mono=True)
+                print(f"Loading Track B audio: {args.audio_b}", file=sys.stderr)
+                y_b, _ = librosa.load(args.audio_b, sr=int(args.sr), mono=True)
+
+                # Parse bar ranges
+                bars_a_parts = args.bars_a.split("-")
+                bar_start_a = int(bars_a_parts[0])
+                bars_b_parts = args.bars_b.split("-")
+                bar_start_b = int(bars_b_parts[0])
+                n_overlap = int(bars_a_parts[1]) - int(bars_a_parts[0])
+
+                align_result = multi_probe_alignment(
+                    y_a, y_b, int(args.sr), args.bpm_a,
+                    args.first_beat_a, args.first_beat_b,
+                    bar_start_a, bar_start_b,
+                    n_probes=max(1, n_overlap // 4),
+                    probe_length_bars=4,
+                    max_offset_ms=args.max_offset_ms,
+                )
+
+                name_a = Path(args.audio_a).stem
+                name_b = Path(args.audio_b).stem
+                compare_result["phase_alignment"] = alignment_to_json(
+                    align_result, name_a, name_b,
+                    first_beat_a=args.first_beat_a,
+                    first_beat_b=args.first_beat_b,
+                )
+
+                rec = align_result["recommendation"]
+                print(f"\nPhase alignment: {align_result['offset_ms']}ms "
+                      f"({align_result['offset_samples']} samples)", file=sys.stderr)
+                print(f"Consistency: {align_result.get('consistency', 'N/A')}", file=sys.stderr)
+                print(f"Recommendation: {rec['rationale']}", file=sys.stderr)
+
+            except Exception as e:
+                print(f"Warning: Phase alignment failed: {e}", file=sys.stderr)
+                compare_result["alignment_error"] = str(e)
+
+        result["compare"] = compare_result
 
     elif args.consensus:
         # Determine starts precedence:
