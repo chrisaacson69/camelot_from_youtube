@@ -1,6 +1,15 @@
 # CLAUDE.md
 
-**Vault:** `C:\Users\Chris.Isaacson\Vault\projects\camelot-from-youtube\README.md`
+**Vault page:** `Vault/projects/camelot-from-youtube/README.md` (logical name `Vault`; resolve the absolute
+mount via `Vault/.claude/local-paths.md` — never hardcode it, the old `C:\Users\Chris.Isaacson\...` path was
+dead after the machine migration).
+
+**Related research:** `Vault/research/dj-eq-blending.md`, `Vault/research/programmatic-dj-mixing-tools.md`.
+
+**Downstream consumer:** logical name `CyborgDJ` — consumes this repo's per-track analysis output. NOTE: it
+currently holds a *stale partial copy* under `CyborgDJ/camelot/<track>/` rather than depending on this repo,
+and `collision.py` / `rekordbox_export.py` are forked into `CyborgDJ/scripts/`. Planned fix is a shared
+schema package (`dj-score`) both sides depend on. Do not deepen the duplication.
 
 ## Project Overview
 
@@ -30,9 +39,13 @@ camelot_from_youtube/
 ├── detect_events.py          # Feature-based event detection
 ├── detect_stem_events.py     # Stem-based event detection
 ├── event_detect.py           # Event detection orchestrator
-├── separate_stems.py         # Demucs stem separation
+├── separate_stems.py         # Demucs stem separation (htdemucs / _ft / _6s)
 ├── analyze_stems.py          # Stem energy analysis
 ├── analyze_onset_drops.py    # Onset/drop analysis
+├── spectral_analysis.py      # Per-bar 31-band ISO-266 third-octave energy -> (n_bars, 31) dBFS matrix
+├── collision.py              # Two-track spectral collision in transition zones; suggests EQ crossovers
+├── alignment.py              # Beat/bar alignment between two tracks
+├── rhythm_detect.py          # Rhythm / meter analysis
 ├── visualize_audio.py        # Audio visualization helpers
 ├── visualize_stems.py        # Stem visualization
 ├── visualize_timeline.py     # Key timeline visualization
