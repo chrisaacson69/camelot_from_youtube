@@ -281,3 +281,6 @@ rekordbox_collection.xml
 *.user
 .vs/
 .vscode/
+
+env_mir/
+bench/results/
