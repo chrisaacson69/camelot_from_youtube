@@ -33,6 +33,16 @@ WINDOW = 0.07  # seconds; mir_eval default
 
 # ── Reference: Rekordbox ─────────────────────────────────────────────────
 
+AUDIO_DIRS = [ROOT, ROOT.parent / "music"]   # sibling `music/` holds tracks not copied into this repo
+
+
+def audio_path(name):
+    for d in AUDIO_DIRS:
+        if (d / name).exists():
+            return str(d / name)
+    raise FileNotFoundError(f"{name} not under {[str(d) for d in AUDIO_DIRS]}")
+
+
 def dump_rekordbox():
     import warnings
     warnings.filterwarnings("ignore")
@@ -56,8 +66,7 @@ def dump_rekordbox():
         rec = {"beats": t.tolist(), "downbeats": t[bn == 1].tolist(),
                "bpm": c.BPM / 100, "src": c.FolderPath}
         json.dump(rec, io.open(out / f"{base}.json", "w", encoding="utf-8"))
-        local = ROOT / Path(c.FolderPath).name
-        manifest[base] = {"audio": str(local if local.exists() else c.FolderPath), "bpm": c.BPM / 100}
+        manifest[base] = {"audio": Path(c.FolderPath).name, "bpm": c.BPM / 100}
         print(f"  {base[:50]:52} beats={len(t):5d} downbeats={int((bn == 1).sum()):4d}")
     json.dump(manifest, io.open(HERE / "tracks.json", "w", encoding="utf-8"), indent=1)
     print(f"{len(manifest)} reference grids -> {out}")

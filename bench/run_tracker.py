@@ -18,6 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
+from beat_bench import audio_path
+
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
 
@@ -41,7 +43,7 @@ def run_beat_this(cpu=False, dbn=False):
     tag = "beat_this" + ("_dbn" if dbn else "")
     for name, info in tracks().items():
         t0 = time.time()
-        beats, downbeats = f2b(info["audio"])
+        beats, downbeats = f2b(audio_path(info["audio"]))
         beats = np.asarray(beats); downbeats = np.asarray(downbeats)
         bpm = 60 / np.median(np.diff(beats)) if len(beats) > 2 else None
         save(tag, name, beats, downbeats, round(bpm, 3) if bpm else None, time.time() - t0)
@@ -51,7 +53,7 @@ def run_allin1():
     import allin1
     for name, info in tracks().items():
         t0 = time.time()
-        r = allin1.analyze(info["audio"])
+        r = allin1.analyze(audio_path(info["audio"]))
         save("allin1", name, r.beats, r.downbeats, r.bpm, time.time() - t0)
         segs = [{"start": s.start, "end": s.end, "label": s.label} for s in r.segments]
         json.dump(segs, io.open(RESULTS / "allin1" / f"{name}.segments.json", "w", encoding="utf-8"), indent=1)
@@ -61,7 +63,7 @@ def run_librosa():
     import librosa
     for name, info in tracks().items():
         t0 = time.time()
-        y, sr = librosa.load(info["audio"], sr=44100, mono=True)
+        y, sr = librosa.load(audio_path(info["audio"]), sr=44100, mono=True)
         tempo, frames = librosa.beat.beat_track(y=y, sr=sr, hop_length=512)
         beats = librosa.frames_to_time(frames, sr=sr, hop_length=512)
         tempo = float(np.atleast_1d(tempo)[0])

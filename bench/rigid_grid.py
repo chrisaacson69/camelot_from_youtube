@@ -23,6 +23,8 @@ from pathlib import Path
 import librosa
 import numpy as np
 
+from beat_bench import audio_path
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
@@ -83,7 +85,7 @@ def main(tempo_source="camelot"):
     tracks = json.load(io.open(HERE / "tracks.json", encoding="utf-8"))
     for name, info in tracks.items():
         t0 = time.time()
-        y, sr = librosa.load(info["audio"], sr=SR, mono=True)
+        y, sr = librosa.load(audio_path(info["audio"]), sr=SR, mono=True)
         cache = ROOT / name / "analysis_cache.json"
         if tempo_source == "camelot" and cache.exists():
             bpm = json.load(io.open(cache, encoding="utf-8"))["tempo"]
