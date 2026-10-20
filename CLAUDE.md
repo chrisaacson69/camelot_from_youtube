@@ -39,7 +39,8 @@ camelot_from_youtube/
 ├── detect_events.py          # Feature-based event detection
 ├── detect_stem_events.py     # Stem-based event detection
 ├── event_detect.py           # Event detection orchestrator
-├── separate_stems.py         # Demucs stem separation (htdemucs / _ft / _6s)
+├── separate_stems.py         # Demucs stem separation (htdemucs / _ft / _6s); --float = unclamped 32-bit stems
+├── resum_check.py            # Stems re-sum to the mix? residual dB, clipping, energy share per stem (G7 check 1)
 ├── analyze_stems.py          # Stem energy analysis
 ├── analyze_onset_drops.py    # Onset/drop analysis
 ├── spectral_analysis.py      # Per-bar 31-band ISO-266 third-octave energy -> (n_bars, 31) dBFS matrix

@@ -28,7 +28,7 @@ Notes:
     - Uses segment mode for long tracks to manage memory
 
 Environment:
-    This script requires the env_demucs environment (Python 3.9 with PyTorch CUDA)
+    This script requires the env_demucs environment (Python 3.14, torch 2.11+cu128, demucs 4.1)
     Run with: env_demucs\\Scripts\\python.exe separate_stems.py ...
 """
 
@@ -80,6 +80,7 @@ def separate_audio(
     overlap: float = 0.25,
     mp3_output: bool = False,
     shifts: int = 1,
+    float_output: bool = False,
 ):
     """
     Separate audio file into stems using Demucs.
@@ -98,10 +99,9 @@ def separate_audio(
         dict: Paths to separated stem files
     """
     import torch
-    import torchaudio
     from demucs.pretrained import get_model
     from demucs.apply import apply_model
-    from demucs.audio import save_audio
+    from demucs.audio import AudioFile, save_audio
 
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -129,21 +129,10 @@ def separate_audio(
     print(f"Model sources: {sources}")
     print(f"Sample rate: {sample_rate} Hz")
 
-    # Load audio
+    # Load audio via Demucs' ffmpeg reader (torchaudio>=2.9 load needs TorchCodec);
+    # it resamples to the model rate and returns stereo
     print(f"\nLoading audio: {audio_path}")
-    waveform, sr = torchaudio.load(audio_path)
-
-    # Resample if needed
-    if sr != sample_rate:
-        print(f"Resampling from {sr} Hz to {sample_rate} Hz")
-        resampler = torchaudio.transforms.Resample(sr, sample_rate)
-        waveform = resampler(waveform)
-
-    # Ensure stereo
-    if waveform.shape[0] == 1:
-        waveform = waveform.repeat(2, 1)
-    elif waveform.shape[0] > 2:
-        waveform = waveform[:2]
+    waveform = AudioFile(audio_path).read(streams=0, samplerate=sample_rate, channels=2)
 
     duration = waveform.shape[1] / sample_rate
     print(f"Duration: {duration:.1f} seconds")
@@ -229,12 +218,17 @@ def separate_audio(
         ext = "mp3" if mp3_output else "wav"
         stem_path = output_dir / f"{source}.{ext}"
 
-        save_audio(
-            stem.cpu(),
-            stem_path,
-            samplerate=sample_rate,
-            clip="clamp"  # Prevent clipping
-        )
+        if float_output:
+            # 32-bit float, unclamped: stems re-sum exactly as Demucs produced them
+            save_audio(stem.cpu(), stem_path, samplerate=sample_rate,
+                       clip="none", as_float=True)
+        else:
+            save_audio(
+                stem.cpu(),
+                stem_path,
+                samplerate=sample_rate,
+                clip="clamp"  # Prevent clipping
+            )
 
         stem_paths[source] = str(stem_path)
         print(f"  Saved: {source}.{ext}")
@@ -315,6 +309,11 @@ Examples:
         action="store_true",
         help="Output MP3 instead of WAV"
     )
+    parser.add_argument(
+        "--float",
+        action="store_true",
+        help="Write 32-bit float WAV without clamping (for re-summation checks / training data)"
+    )
 
     args = parser.parse_args()
 
@@ -335,6 +334,7 @@ Examples:
             segment_length=args.segment,
             shifts=args.shifts,
             mp3_output=args.mp3,
+            float_output=args.float,
         )
 
         print("\n" + "="*50)
