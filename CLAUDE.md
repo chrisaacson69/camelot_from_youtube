@@ -11,10 +11,18 @@ currently holds a *stale partial copy* under `CyborgDJ/camelot/<track>/` rather 
 and `collision.py` / `rekordbox_export.py` are forked into `CyborgDJ/scripts/`. Do not deepen the duplication.
 
 **Shared library — `dj-score` (exists, 2026-10-21):** logical name `dj-score`, sibling `../dj-score`,
-`chrisaacson69/dj-score`. All analysis code is migrating there (copy → repoint → delete); this repo keeps
-the Tk UI and per-track data and becomes a consumer, as CyborgDJ will. **The per-module keep / fold /
-retire verdicts and the migration order live in `../dj-score/MIGRATION.md`** — read it before touching
-any analysis module here, and add new analysis code to dj-score, never to this repo.
+`chrisaacson69/dj-score`. All analysis code is migrating there (copy → repoint → archive; nothing is
+purged, retired tools and their outputs move to `archive/<tool>/`); this repo keeps the Tk UI and per-track
+data and is a consumer, as CyborgDJ will be. **The per-module keep / fold / retire verdicts and the
+migration order live in `../dj-score/MIGRATION.md`** — read it before touching any analysis module here,
+and add new analysis code to dj-score, never to this repo.
+
+**`audio_ui.py` runs on dj-score (2026-10-21).** Its store holds a dj-score `TrackAnalysis`; BPM/key/events/
+spectrum/export call `dj_score.services`. The old analysis modules here are no longer imported by the UI
+but stay until archiving. Install into `env1` with **`pip install --no-deps -e ../dj-score`**: `--no-deps`
+keeps env1's pinned numpy/librosa. `tests/ui_repoint_oracle.py` replays one scripted session through the
+pre-repoint UI (from git) and the current one and requires identical caches, detail files, chart pixels and
+text; run it after any UI change that should not alter behaviour.
 
 ## Project Overview
 

@@ -44,6 +44,12 @@ Camelot from YouTube analyzes audio files to detect BPM, musical key (as Camelot
    pip install librosa numpy scipy matplotlib pyrekordbox demucs requests python-dotenv
    ```
 
+   Then the shared analysis library, cloned beside this repo
+   ([dj-score](https://github.com/chrisaacson69/dj-score)):
+   ```
+   pip install --no-deps -e ../dj-score
+   ```
+
 4. *(Optional)* For YouTube metadata support, copy `.env.example` to `.env` and add your [YouTube Data API key](https://console.cloud.google.com/apis/credentials).
 
 ## Usage

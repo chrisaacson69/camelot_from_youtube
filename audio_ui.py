@@ -32,24 +32,22 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-sys.path.insert(0, str(Path(__file__).parent))
-from bpm_detect import (
-    detect_beats, group_beats_into_measures, compute_span_bpm,
-    find_bpm_segments, format_time,
-)
-from key_detect import (
-    compute_measure_chroma, compute_phrase_chroma, find_key_segments,
-    compute_summary as key_compute_summary,
-)
-from event_detect import (
-    find_or_create_stems, compute_stem_phrase_energy, compute_stem_presence,
-    detect_stem_events, compute_bar_features, compute_phrase_features,
-    detect_feature_events, normalize_feature,
-    compute_summary as event_compute_summary,
-)
-from spectral_analysis import (
-    compute_bar_spectra, compute_spectral_summary, NOISE_FLOOR_DB,
-)
+# Analysis lives in dj-score (pip install -e ../dj-score); this file is the UI.
+from dj_score.adapters import cache_store
+from dj_score.adapters.audio import LibrosaLoader
+from dj_score.adapters.loudness import PyloudnormMeter
+from dj_score.adapters.rekordbox_xml import RekordboxXml
+from dj_score.adapters.stems import StemFolder
+from dj_score.domain.audio import measure_loudness
+from dj_score.domain.codec import from_plain, to_plain
+from dj_score.domain.events import compute_summary as event_compute_summary, normalize_feature
+from dj_score.domain.model import Event
+from dj_score.domain.spectral import NOISE_FLOOR_DB
+from dj_score.domain.timefmt import format_time
+from dj_score.services import analyze, export
+
+# The accumulating collection Rekordbox is pointed at (Preferences > Advanced > rekordbox xml)
+REKORDBOX_XML = Path(__file__).resolve().parent / "rekordbox_collection.xml"
 
 import pygame
 
@@ -314,7 +312,7 @@ class EventDialog(tk.Toplevel):
         measures = self._store.measures
         if not measures:
             return (t, 0)
-        starts = [m["start"] for m in measures]
+        starts = [m.start for m in measures]
         idx = bisect.bisect_right(starts, t)
         if idx == 0:
             best = 0
@@ -324,7 +322,7 @@ class EventDialog(tk.Toplevel):
             best = idx if abs(starts[idx] - t) < abs(starts[idx - 1] - t) \
                 else idx - 1
         m = measures[best]
-        return (m["start"], m["measure_num"])
+        return (m.start, m.measure_num)
 
     def _snap_to_phrase(self, t):
         measures = self._store.measures
@@ -332,7 +330,7 @@ class EventDialog(tk.Toplevel):
             return (t, 0)
         pb = self._phrase_bars
         phrase_m = [measures[i] for i in range(0, len(measures), pb)]
-        starts = [m["start"] for m in phrase_m]
+        starts = [m.start for m in phrase_m]
         idx = bisect.bisect_right(starts, t)
         if idx == 0:
             best = 0
@@ -342,16 +340,16 @@ class EventDialog(tk.Toplevel):
             best = idx if abs(starts[idx] - t) < abs(starts[idx - 1] - t) \
                 else idx - 1
         m = phrase_m[best]
-        return (m["start"], m["measure_num"])
+        return (m.start, m.measure_num)
 
     def _time_to_bar(self, t):
         measures = self._store.measures
         if not measures:
             return 0
-        starts = [m["start"] for m in measures]
+        starts = [m.start for m in measures]
         idx = bisect.bisect_right(starts, t) - 1
         idx = max(0, min(idx, len(measures) - 1))
-        return measures[idx]["measure_num"]
+        return measures[idx].measure_num
 
     # -- Callbacks --------------------------------------------------------
 
@@ -401,8 +399,8 @@ class EventDialog(tk.Toplevel):
             return
         self._updating = True
         for m in measures:
-            if m["measure_num"] == bar:
-                self._time_var.set(f"{m['start']:.2f}")
+            if m.measure_num == bar:
+                self._time_var.set(f"{m.start:.2f}")
                 break
         self._updating = False
 
@@ -625,7 +623,7 @@ class ExportDialog(tk.Toplevel):
         measures = self._store.measures
         if not measures:
             return (t, 0)
-        starts = [m["start"] for m in measures]
+        starts = [m.start for m in measures]
         idx = bisect.bisect_right(starts, t)
         if idx == 0:
             best = 0
@@ -635,7 +633,7 @@ class ExportDialog(tk.Toplevel):
             best = idx if abs(starts[idx] - t) < abs(starts[idx - 1] - t) \
                 else idx - 1
         m = measures[best]
-        return (m["start"], m["measure_num"])
+        return (m.start, m.measure_num)
 
     def _snap_to_phrase(self, t):
         measures = self._store.measures
@@ -643,7 +641,7 @@ class ExportDialog(tk.Toplevel):
             return (t, 0)
         pb = self._phrase_bars
         phrase_m = [measures[i] for i in range(0, len(measures), pb)]
-        starts = [m["start"] for m in phrase_m]
+        starts = [m.start for m in phrase_m]
         idx = bisect.bisect_right(starts, t)
         if idx == 0:
             best = 0
@@ -653,21 +651,21 @@ class ExportDialog(tk.Toplevel):
             best = idx if abs(starts[idx] - t) < abs(starts[idx - 1] - t) \
                 else idx - 1
         m = phrase_m[best]
-        return (m["start"], m["measure_num"])
+        return (m.start, m.measure_num)
 
     def _time_to_bar(self, t):
         measures = self._store.measures
         if not measures:
             return 0
-        starts = [m["start"] for m in measures]
+        starts = [m.start for m in measures]
         idx = bisect.bisect_right(starts, t) - 1
         idx = max(0, min(idx, len(measures) - 1))
-        return measures[idx]["measure_num"]
+        return measures[idx].measure_num
 
     def _bar_to_time(self, bar_num):
         for m in self._store.measures:
-            if m["measure_num"] == bar_num:
-                return m["start"]
+            if m.measure_num == bar_num:
+                return m.start
         return None
 
     # -- Callbacks ----------------------------------------------------------
@@ -831,313 +829,83 @@ class ExportDialog(tk.Toplevel):
 # =========================================================================
 
 class AnalysisStore:
-    """Holds all analysis results.  No UI or plotting logic."""
+    """The open track's dj-score `TrackAnalysis`, plus UI session state."""
 
     def __init__(self):
         self.reset()
 
     def reset(self):
-        # BPM
-        self.y = None
-        self.sr = None
-        self.beat_times = None
-        self.measures = None
-        self.tempo = None
-        self.segments = None
-        self.span_data = None
-        self.downbeat_phase = 0
-        self.bars_trimmed = 0
-        self.loudness_dbfs = None  # RMS dBFS
-        self.peak_dbfs = None      # Peak dBFS
-        self.safe_volume = 1.0     # Max volume before clipping
-        self.lufs = None           # Integrated LUFS (if pyloudnorm available)
+        self.analysis = None       # dj_score TrackAnalysis once BPM has run
+        self._duration = 0.0       # from the file header, before any analysis
         self.markers = []          # Temporary markers (session-only, not saved)
-        # Waveform cache
-        self.y_ds = None
-        self.t_ds = None
-        self.duration = 0.0
-        # Key
-        self.measure_keys = None
-        self.phrases = None
-        self.key_segments = None
-        self.key_summary = None
-        # Events
-        self.events = None
-        self.event_phrases = None
-        self.event_mode = None
-        self.event_summary = None
-        self.event_extra = {}
-        # Spectrum
-        self.bar_spectra = None       # np.ndarray (n_bars, n_bands) dB
-        self.band_centers = None      # np.ndarray (n_bands,) Hz
-        self.band_edges = None        # np.ndarray (n_bands, 2) Hz
-        self.spectral_summary = None  # dict
-        # Version counter
-        self.version = 0
+        self.version = 0           # bumped on every change; charts cache by it
+        self._audio_name = None
+
+    @property
+    def duration(self):
+        return self.analysis.duration if self.analysis else self._duration
+
+    @duration.setter
+    def duration(self, value):
+        self._duration = value
 
     @property
     def has_bpm(self):
-        return self.y is not None
+        return self.analysis is not None
 
     @property
     def has_key(self):
-        return self.key_segments is not None
+        return self.has_bpm and self.analysis.key is not None
 
     @property
     def has_events(self):
-        return self.events is not None
+        return self.has_bpm and self.analysis.events is not None
 
     @property
     def has_spectrum(self):
-        return self.bar_spectra is not None
+        return self.has_bpm and self.analysis.spectrum is not None
 
-    def store_bpm(self, r):
-        self.y = r["y"]
-        self.sr = r["sr"]
-        self.beat_times = r["beat_times"]
-        self.tempo = r["tempo"]
-        self.downbeat_phase = r.get("downbeat_phase", 0)
-        self.bars_trimmed = r.get("bars_trimmed", 0)
-        self.measures = r["measures"]
-        self.span_data = r["span_data"]
-        self.segments = r["segments"]
-        self.duration = len(self.y) / self.sr
-        # Loudness
-        self._compute_loudness()
-        # Pre-downsample waveform (~4000 points)
-        n = len(self.y)
-        factor = max(1, n // 4000)
-        self.y_ds = self.y[::factor]
-        self.t_ds = np.arange(len(self.y_ds)) * (factor / self.sr)
-        self.version += 1
+    @property
+    def measures(self):
+        return self.analysis.grid.measures if self.has_bpm else None
 
-    def _compute_loudness(self):
-        """Compute RMS dBFS, peak dBFS, and optionally LUFS."""
-        y = self.y
-        if y is None or len(y) == 0:
-            return
-        rms = float(np.sqrt(np.mean(y ** 2)))
-        peak = float(np.max(np.abs(y)))
-        self.loudness_dbfs = round(20 * np.log10(rms), 1) if rms > 0 else -120.0
-        self.peak_dbfs = round(20 * np.log10(peak), 1) if peak > 0 else -120.0
-        # Safe playback volume: pull peaks to just below 0 dBFS
-        if self.peak_dbfs is not None and self.peak_dbfs > -0.1:
-            # 10^(-peak_dbfs/20) gives multiplier that brings peak to 0 dBFS
-            # subtract 0.5 dB headroom
-            self.safe_volume = round(
-                min(1.0, 10 ** (-(self.peak_dbfs + 0.5) / 20)), 2)
-        else:
-            self.safe_volume = 1.0
-        # LUFS via pyloudnorm (optional)
-        try:
-            import pyloudnorm as pyln
-            meter = pyln.Meter(self.sr)
-            # pyloudnorm expects shape (samples,) for mono
-            self.lufs = round(float(meter.integrated_loudness(y)), 1)
-        except ImportError:
-            self.lufs = None
-        except Exception:
-            self.lufs = None
+    @property
+    def event_mode(self):
+        return self.analysis.events.event_mode if self.has_events else None
 
-    def store_key(self, r):
-        self.measure_keys = r["measure_keys"]
-        self.phrases = r["phrases"]
-        self.key_segments = r["segments"]
-        self.key_summary = r["summary"]
-        self.version += 1
+    @property
+    def events(self):
+        """The event list (editable in place), or None before event analysis."""
+        return self.analysis.events.events if self.has_events else None
 
-    def store_events(self, r):
-        self.events = r["events"]
-        self.event_phrases = r["phrases"]
-        self.event_mode = r["mode"]
-        self.event_summary = r["summary"]
-        self.event_extra = {k: r[k] for k in ("stem_energies", "stem_presence")
-                            if k in r}
-        self.version += 1
-
-    def store_spectrum(self, r):
-        self.bar_spectra = r["bar_spectra"]
-        self.band_centers = r["band_centers"]
-        self.band_edges = r["band_edges"]
-        self.spectral_summary = r["summary"]
+    def changed(self):
         self.version += 1
 
     # -- persistence -----------------------------------------------------
 
     def save(self, project_dir):
         """Save analysis data to project_dir/analysis_cache.*"""
-        d = Path(project_dir)
-
-        # Numpy arrays → compressed .npz
-        arrays = {}
-        if self.y is not None:
-            arrays["y"] = self.y
-        if self.beat_times is not None:
-            arrays["beat_times"] = np.asarray(self.beat_times)
-        if self.y_ds is not None:
-            arrays["y_ds"] = self.y_ds
-        if self.t_ds is not None:
-            arrays["t_ds"] = self.t_ds
-        if self.bar_spectra is not None:
-            arrays["bar_spectra"] = self.bar_spectra
-            arrays["band_centers"] = self.band_centers
-            arrays["band_edges"] = self.band_edges
-        if arrays:
-            np.savez_compressed(str(d / "analysis_cache.npz"), **arrays)
-
-        # Everything else → JSON
-        def _to_list(v):
-            """Convert numpy arrays/scalars to JSON-safe types."""
-            if isinstance(v, np.ndarray):
-                return v.tolist()
-            if isinstance(v, (np.integer,)):
-                return int(v)
-            if isinstance(v, (np.floating,)):
-                return float(v)
-            return v
-
-        # span_data is a dict with numpy arrays — convert to plain types
-        span_save = None
-        if self.span_data:
-            span_save = {}
-            for k, v in self.span_data.items():
-                span_save[k] = _to_list(v)
-
-        data = {
-            "sr": self.sr,
-            "tempo": _to_list(self.tempo),
-            "duration": self.duration,
-            "downbeat_phase": self.downbeat_phase,
-            "bars_trimmed": self.bars_trimmed,
-            "loudness_dbfs": self.loudness_dbfs,
-            "peak_dbfs": self.peak_dbfs,
-            "safe_volume": self.safe_volume,
-            "lufs": self.lufs,
-            "measures": self.measures,
-            "segments": self.segments,
-            "span_data": span_save,
-        }
-
-        # Key
-        if self.has_key:
-            data["key"] = {
-                "measure_keys": self.measure_keys,
-                "phrases": self.phrases,
-                "key_segments": self.key_segments,
-                "key_summary": self.key_summary,
-            }
-
-        # Events
-        if self.has_events:
-            ev_data = {
-                "events": self.events,
-                "event_phrases": self.event_phrases,
-                "event_mode": self.event_mode,
-                "event_summary": self.event_summary,
-            }
-            # Stem extra: energies and presence are dicts of lists
-            if self.event_extra:
-                se = {}
-                for k, v in self.event_extra.items():
-                    if isinstance(v, dict):
-                        se[k] = {sk: [_to_list(x) for x in sv]
-                                 if isinstance(sv, list) else _to_list(sv)
-                                 for sk, sv in v.items()}
-                    else:
-                        se[k] = _to_list(v)
-                ev_data["event_extra"] = se
-            data["events_block"] = ev_data
-
-        # Spectrum
-        if self.has_spectrum:
-            data["spectrum"] = {"spectral_summary": self.spectral_summary}
-
-        # Metadata for cache validation
-        data["_audio_name"] = getattr(self, "_audio_name", None)
-
-        with open(d / "analysis_cache.json", "w") as f:
-            json.dump(data, f, indent=2, default=_to_list)
+        cache_store.save(self.analysis, project_dir)
 
     def load(self, project_dir):
         """Load cached analysis data.  Returns True if loaded, False if
         no cache or cache is invalid."""
-        d = Path(project_dir)
-        json_path = d / "analysis_cache.json"
-        npz_path = d / "analysis_cache.npz"
-
-        if not json_path.exists() or not npz_path.exists():
-            return False
-
         try:
-            with open(json_path, "r") as f:
-                data = json.load(f)
-
-            npz = np.load(str(npz_path), allow_pickle=False)
-
-            # BPM data
-            self.y = npz["y"]
-            self.sr = data["sr"]
-            self.beat_times = npz["beat_times"]
-            self.tempo = data["tempo"]
-            self.downbeat_phase = data.get("downbeat_phase", 0)
-            self.bars_trimmed = data.get("bars_trimmed", 0)
-            self.loudness_dbfs = data.get("loudness_dbfs")
-            self.peak_dbfs = data.get("peak_dbfs")
-            self.safe_volume = data.get("safe_volume", 1.0)
-            self.lufs = data.get("lufs")
-            self.measures = data["measures"]
-            self.segments = data["segments"]
-            # Restore span_data with numpy arrays
-            sd = data.get("span_data")
-            if sd and isinstance(sd, dict):
-                if "times" in sd:
-                    sd["times"] = np.asarray(sd["times"])
-                if "bpms" in sd:
-                    sd["bpms"] = np.asarray(sd["bpms"])
-            self.span_data = sd
-            self.duration = data["duration"]
-            self.y_ds = npz["y_ds"]
-            self.t_ds = npz["t_ds"]
-            self._audio_name = data.get("_audio_name", "")
-
-            # Key data
-            key_block = data.get("key")
-            if key_block:
-                self.measure_keys = key_block["measure_keys"]
-                self.phrases = key_block["phrases"]
-                self.key_segments = key_block["key_segments"]
-                self.key_summary = key_block["key_summary"]
-
-            # Event data
-            ev_block = data.get("events_block")
-            if ev_block:
-                self.events = ev_block["events"]
-                self.event_phrases = ev_block["event_phrases"]
-                self.event_mode = ev_block["event_mode"]
-                self.event_summary = ev_block["event_summary"]
-                self.event_extra = ev_block.get("event_extra", {})
-
-            # Spectrum data
-            if "bar_spectra" in npz:
-                self.bar_spectra = npz["bar_spectra"]
-                self.band_centers = npz["band_centers"]
-                self.band_edges = npz["band_edges"]
-                spec_block = data.get("spectrum")
-                if spec_block:
-                    self.spectral_summary = spec_block.get("spectral_summary")
-
-            # Recompute loudness if not in cache (backward compat)
-            if self.loudness_dbfs is None and self.y is not None:
-                self._compute_loudness()
-
-            self.version += 1
-            npz.close()
-            return True
-
-        except Exception as e:
+            a = cache_store.load(project_dir)
+        except Exception:
             import traceback
             traceback.print_exc()
             return False
+        if a is None or a.waveform.y is None:
+            return False
+        if a.loudness.loudness_dbfs is None:
+            # Caches from before loudness was stored: measure it now
+            y = a.waveform.y
+            a.loudness = measure_loudness(y, PyloudnormMeter().integrated_lufs(y, a.sr))
+        self.analysis = a
+        self._audio_name = a.audio_name or ""
+        self.changed()
+        return True
 
 
 # =========================================================================
@@ -1186,8 +954,9 @@ class ChartBuilder:
         if s.has_key:
             out.extend(_GROUP_KEY)
         if s.has_events:
-            if s.event_mode == "stems" and s.event_extra:
-                se = s.event_extra.get("stem_energies", {})
+            ev = s.analysis.events
+            if ev.event_mode == "stems" and ev.event_extra:
+                se = ev.event_extra.stem_energies or {}
                 for stem in sorted(se.keys()):
                     out.append(f"{_STEM_PREFIX}{stem}")
             else:
@@ -1273,15 +1042,15 @@ class ChartBuilder:
         if not s.events:
             return
         for e in s.events:
-            et = e.get("type", "")
+            et = e.type or ""
             c = ("#cc2222" if "decrease" in et or "breakdown" in et
                  else "#2266cc" if "increase" in et or "drop" in et
                  else "#888800")
-            ax.axvline(x=e["time"], color=c, linewidth=1.2, alpha=0.5,
+            ax.axvline(x=e.time, color=c, linewidth=1.2, alpha=0.5,
                        linestyle="--")
             if label:
-                ax.text(e["time"], y_frac,
-                        f'Bar {e.get("bar","")}\n{et}',
+                ax.text(e.time, y_frac,
+                        f'Bar {e.bar}\n{et}',
                         transform=ax.get_xaxis_transform(),
                         fontsize=5.5, ha="center", va="top", color=c,
                         fontweight="bold",
@@ -1304,12 +1073,12 @@ class ChartBuilder:
     def _phrase_times(self):
         """Return (mid_times[], widths[]) for bar charts aligned to phrases."""
         s = self.store
-        if not s.event_phrases:
+        if not s.has_events or not s.analysis.events.event_phrases:
             return [], []
         mids, ws = [], []
-        for p in s.event_phrases:
-            t0 = p["start"]
-            t1 = p["end"]
+        for p in s.analysis.events.event_phrases:
+            t0 = p.start
+            t1 = p.end
             mids.append((t0 + t1) / 2)
             ws.append(t1 - t0)
         return mids, ws
@@ -1318,33 +1087,36 @@ class ChartBuilder:
 
     def _build_waveform(self):
         s = self.store
-        if s.y_ds is None:
+        if not s.has_bpm:
             return None
+        a = s.analysis
 
         fig, ax = self._make_fig(3.5)
-        ax.plot(s.t_ds, s.y_ds, color="#888888", linewidth=0.3, alpha=0.6)
+        ax.plot(a.waveform.t_ds, a.waveform.y_ds, color="#888888", linewidth=0.3, alpha=0.6)
 
         # BPM segment shading
-        if s.segments:
+        segments = a.grid.segments
+        if segments:
             cols = plt.cm.Pastel1(np.linspace(0, 0.8,
-                                              max(len(s.segments), 1)))
-            for i, seg in enumerate(s.segments):
-                ax.axvspan(seg["start_time"], seg["end_time"],
+                                              max(len(segments), 1)))
+            for i, seg in enumerate(segments):
+                ax.axvspan(seg.start_time, seg.end_time,
                            alpha=0.15, color=cols[i % len(cols)])
 
         # Key segment labels (top)
-        if s.key_segments:
-            for seg in s.key_segments:
-                mid = (seg["start_time"] + seg["end_time"]) / 2
-                ax.text(mid, 1.02, seg["camelot"], fontsize=7,
+        if s.has_key and a.key.key_segments:
+            for seg in a.key.key_segments:
+                mid = (seg.start_time + seg.end_time) / 2
+                ax.text(mid, 1.02, seg.camelot, fontsize=7,
                         ha="center", va="bottom", color="#224488",
                         fontweight="bold",
                         transform=ax.get_xaxis_transform())
 
         # Phrase boundaries
-        if s.measures:
-            for i in range(0, len(s.measures), self.phrase_bars):
-                ax.axvline(x=s.measures[i]["start"], color="#2244aa",
+        measures = a.grid.measures
+        if measures:
+            for i in range(0, len(measures), self.phrase_bars):
+                ax.axvline(x=measures[i].start, color="#2244aa",
                            linewidth=0.4, alpha=0.2)
 
         # Event markers (with labels)
@@ -1362,37 +1134,37 @@ class ChartBuilder:
         """BPM per measure (thin bars) + smoothed span curve + segment
         medians.  Single panel version of the old BPM Detail panel 2."""
         s = self.store
+        grid = s.analysis.grid
         fig, ax = self._make_fig(3.5)
 
         # Per-measure BPM thin bars
-        if s.measures:
-            for m in s.measures:
-                bpm = m.get("bpm")
+        if grid.measures:
+            for m in grid.measures:
+                bpm = m.bpm
                 if bpm and bpm > 0:
-                    ax.bar(m["start"], bpm, width=(m["end"] - m["start"]),
+                    ax.bar(m.start, bpm, width=(m.end - m.start),
                            align="edge", color="#aaccff", alpha=0.5,
                            linewidth=0)
 
         # Span BPM curve
-        if s.span_data:
-            times = s.span_data.get("times")
-            bpms = s.span_data.get("bpms")
-            if times is not None and bpms is not None:
-                ax.plot(times, bpms, color="#cc3333", linewidth=1.5,
-                        label=f'{s.span_data.get("span", 8)}-beat span')
+        span = grid.span
+        if span is not None:
+            if span.times is not None and span.bpms is not None:
+                ax.plot(span.times, span.bpms, color="#cc3333", linewidth=1.5,
+                        label=f'{span.span if span.span is not None else 8}-beat span')
 
         # Segment BPM lines
-        if s.segments:
+        if grid.segments:
             cols = plt.cm.Set2(np.linspace(0, 0.8,
-                                           max(len(s.segments), 1)))
-            for i, seg in enumerate(s.segments):
-                seg_bpm = seg["bpm"]
-                ax.hlines(seg_bpm, seg["start_time"],
-                          seg["end_time"], colors=cols[i % len(cols)],
+                                           max(len(grid.segments), 1)))
+            for i, seg in enumerate(grid.segments):
+                seg_bpm = seg.bpm
+                ax.hlines(seg_bpm, seg.start_time,
+                          seg.end_time, colors=cols[i % len(cols)],
                           linewidth=2.5, zorder=5)
-                ax.axvspan(seg["start_time"], seg["end_time"],
+                ax.axvspan(seg.start_time, seg.end_time,
                            alpha=0.08, color=cols[i % len(cols)])
-                mid = (seg["start_time"] + seg["end_time"]) / 2
+                mid = (seg.start_time + seg.end_time) / 2
                 ax.text(mid, seg_bpm + 0.3,
                         f'{seg_bpm:.1f}', ha="center",
                         fontsize=8, fontweight="bold",
@@ -1404,7 +1176,7 @@ class ChartBuilder:
         ax.set_xlabel("Time (seconds)", fontsize=9)
         ax.set_title(f"BPM Span  - {self._audio_name()}", fontsize=10)
         ax.tick_params(labelsize=8)
-        if s.span_data:
+        if span is not None:
             ax.legend(fontsize=8, loc="upper right")
         return fig
 
@@ -1413,21 +1185,22 @@ class ChartBuilder:
         s = self.store
         fig, ax = self._make_fig(2.5)
 
-        if s.key_segments:
+        key_segments = s.analysis.key.key_segments
+        if key_segments:
             # Assign colors per camelot code
-            codes = list({seg["camelot"] for seg in s.key_segments})
+            codes = list({seg.camelot for seg in key_segments})
             cmap = plt.cm.Set3(np.linspace(0, 1, max(len(codes), 1)))
             code_color = {c: cmap[i % len(cmap)] for i, c in enumerate(codes)}
 
-            for seg in s.key_segments:
-                t0, t1 = seg["start_time"], seg["end_time"]
-                c = code_color[seg["camelot"]]
+            for seg in key_segments:
+                t0, t1 = seg.start_time, seg.end_time
+                c = code_color[seg.camelot]
                 ax.barh(0.5, t1 - t0, left=t0, height=0.6, color=c,
                         edgecolor="white", linewidth=0.5)
                 mid = (t0 + t1) / 2
-                label = seg["camelot"]
+                label = seg.camelot
                 if (t1 - t0) > s.duration * 0.06:
-                    label += f'\n{seg.get("key_name", "")}'
+                    label += f'\n{seg.key_name}'
                 ax.text(mid, 0.5, label, ha="center", va="center",
                         fontsize=8, fontweight="bold")
         self._add_markers(ax)
@@ -1445,19 +1218,20 @@ class ChartBuilder:
         s = self.store
         fig, ax = self._make_fig(2.5)
 
-        if s.phrases:
-            codes = sorted({p.get("camelot", "?") for p in s.phrases})
+        phrases = s.analysis.key.phrases
+        if phrases:
+            codes = sorted({p.camelot for p in phrases})
             cmap = plt.cm.Set3(np.linspace(0, 1, max(len(codes), 1)))
             code_color = {c: cmap[i % len(cmap)] for i, c in enumerate(codes)}
 
             # Track which codes actually appear (for legend)
             seen = set()
-            for p in s.phrases:
-                t0 = p["start"]
-                t1 = p["end"]
-                conf = p.get("confidence", 0)
-                cam = p.get("camelot", "?")
-                key_name = p.get("key_name", "")
+            for p in phrases:
+                t0 = p.start
+                t1 = p.end
+                conf = p.confidence
+                cam = p.camelot
+                key_name = p.key_name
                 lbl = f"{cam} {key_name}" if cam not in seen else None
                 seen.add(cam)
                 ax.bar((t0 + t1) / 2, conf, width=(t1 - t0) * 0.9,
@@ -1489,12 +1263,13 @@ class ChartBuilder:
             return fig
 
         # Gather values
-        event_times = {e["time"] for e in (s.events or [])}
+        event_times = {e.time for e in (s.events or [])}
         vals, colors = [], []
-        for p in s.event_phrases:
-            vals.append(p.get(field, 0))
+        for p in s.analysis.events.event_phrases:
+            v = getattr(p, field, None)
+            vals.append(v if v is not None else 0)
             # Highlight phrases that contain an event
-            is_ev = any(p["start"] <= t <= p["end"] for t in event_times)
+            is_ev = any(p.start <= t <= p.end for t in event_times)
             colors.append(event_color if is_ev else color)
 
         ax.bar(mids, vals, width=[w * 0.9 for w in ws],
@@ -1517,7 +1292,8 @@ class ChartBuilder:
         fig, ax = self._make_fig(3.0)
 
         mids, ws = self._phrase_times()
-        if not mids or not s.event_phrases:
+        phrases = s.analysis.events.event_phrases
+        if not mids or not phrases:
             return fig
 
         # Compute scores from raw phrase features
@@ -1529,24 +1305,24 @@ class ChartBuilder:
 
         # Gather raw values, skip any missing features gracefully
         available = [f for f in feature_names
-                     if f in s.event_phrases[0]]
+                     if getattr(phrases[0], f, None) is not None]
         if not available:
             return fig
 
-        raw = {f: np.array([p.get(f, 0) for p in s.event_phrases])
+        raw = {f: np.array([getattr(p, f) or 0 for p in phrases])
                for f in available}
         normed = {f: normalize_feature(raw[f]) for f in available}
 
-        scores = np.zeros(len(s.event_phrases))
-        for i in range(context, len(s.event_phrases)):
+        scores = np.zeros(len(phrases))
+        for i in range(context, len(phrases)):
             for f in available:
                 before = np.mean(normed[f][max(0, i - context):i])
                 scores[i] += abs(normed[f][i] - before) * weights.get(f, 0.1)
 
-        event_times = {e["time"] for e in (s.events or [])}
+        event_times = {e.time for e in (s.events or [])}
         colors = []
-        for p in s.event_phrases:
-            is_ev = any(p["start"] <= t <= p["end"] for t in event_times)
+        for p in phrases:
+            is_ev = any(p.start <= t <= p.end for t in event_times)
             colors.append("#ff4444" if is_ev else "#ccaa66")
 
         ax.bar(mids, scores, width=[w * 0.9 for w in ws],
@@ -1569,8 +1345,9 @@ class ChartBuilder:
         s = self.store
         fig, ax = self._make_fig(3.0)
 
-        se = s.event_extra.get("stem_energies", {})
-        spr = s.event_extra.get("stem_presence", {})
+        extra = s.analysis.events.event_extra
+        se = (extra.stem_energies if extra else None) or {}
+        spr = (extra.stem_presence if extra else None) or {}
         energies = se.get(stem, [])
         presence = spr.get(stem, [])
 
@@ -1578,10 +1355,10 @@ class ChartBuilder:
         if not mids or not energies:
             return fig
 
-        event_times = {e["time"] for e in (s.events or [])}
+        event_times = {e.time for e in (s.events or [])}
         colors, alphas = [], []
-        for i, p in enumerate(s.event_phrases):
-            is_ev = any(p["start"] <= t <= p["end"] for t in event_times)
+        for i, p in enumerate(s.analysis.events.event_phrases):
+            is_ev = any(p.start <= t <= p.end for t in event_times)
             colors.append("#ff4444" if is_ev else "#6699cc")
             pres = presence[i] if i < len(presence) else True
             alphas.append(0.85 if pres else 0.3)
@@ -1609,11 +1386,11 @@ class ChartBuilder:
         s = self.store
         fig, ax = self._make_fig(4.0)
 
-        spectra = s.bar_spectra       # (n_bars, n_bands)
-        edges = s.band_edges          # (n_bands, 2)
+        spectra = s.analysis.spectrum.bar_spectra   # (n_bars, n_bands)
+        edges = s.analysis.spectrum.band_edges      # (n_bands, 2)
 
         # Build time edges from measures
-        bar_times = [(m["start"], m["end"]) for m in s.measures]
+        bar_times = [(m.start, m.end) for m in s.analysis.grid.measures]
         t_edges = [bar_times[0][0]] + [t[1] for t in bar_times]
         # Build frequency edges from band edges
         f_edges = [edges[0, 0]] + [edges[i, 1] for i in range(len(edges))]
@@ -1884,7 +1661,7 @@ class AudioAnalysisApp:
         if not self.audio_path or not self.project_dir:
             messagebox.showwarning("Export", "No track loaded.")
             return
-        if not self.store.tempo:
+        if not self.store.has_bpm or not self.store.analysis.grid.tempo:
             messagebox.showwarning("Export",
                                    "Run at least BPM analysis before exporting.")
             return
@@ -1893,16 +1670,11 @@ class AudioAnalysisApp:
         self.store.save(self.project_dir)
 
         try:
-            from rekordbox_export import export_track, load_store_data, \
-                get_export_path
-            data = load_store_data(self.project_dir)
-            result_path, num_tracks = export_track(
-                audio_path=self.audio_path,
-                store_data=data,
-            )
+            num_tracks = export.export_to_rekordbox(
+                self.audio_path, self.store.analysis, RekordboxXml(REKORDBOX_XML))
             messagebox.showinfo("Export",
                                 f"{self.audio_path.name}\n\n"
-                                f"Exported to: {result_path}\n"
+                                f"Exported to: {REKORDBOX_XML}\n"
                                 f"Tracks in collection: {num_tracks}")
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
@@ -2001,12 +1773,12 @@ class AudioAnalysisApp:
 
         # Build status summary
         parts = []
-        if s.tempo:
-            parts.append(f"BPM: {s.tempo:.1f}")
-        if s.has_key and s.key_summary:
-            dom = s.key_summary.get("dominant", {})
-            parts.append(
-                f'Key: {dom.get("key_name","?")} ({dom.get("camelot","?")})')
+        a = s.analysis
+        if s.has_bpm and a.grid.tempo:
+            parts.append(f"BPM: {a.grid.tempo:.1f}")
+        if s.has_key and a.key.key_summary:
+            dom = a.key.key_summary.dominant
+            parts.append(f'Key: {dom.key_name} ({dom.camelot})')
         if s.has_events:
             self.btn_add_event.config(state="normal")
             parts.append(f"Events: {len(s.events)} ({s.event_mode})")
@@ -2019,21 +1791,21 @@ class AudioAnalysisApp:
         """Update the persistent track info label with BPM, Key, loudness, duration."""
         s = self.store
         parts = []
+        a = s.analysis
         if s.duration > 0:
             parts.append(format_time(s.duration))
-        if s.tempo:
-            parts.append(f"{s.tempo:.1f} BPM")
-        if s.has_key and s.key_summary:
-            dom = s.key_summary.get("dominant", {})
-            key_name = dom.get("key_name", "")
-            camelot = dom.get("camelot", "")
-            if key_name:
-                parts.append(f"{camelot}  {key_name}")
-        if s.loudness_dbfs is not None:
-            loud = f"{s.loudness_dbfs:+.1f} dBFS"
-            if s.lufs is not None:
-                loud += f" / {s.lufs:+.1f} LUFS"
-            if s.peak_dbfs is not None and s.peak_dbfs > -0.1:
+        if s.has_bpm and a.grid.tempo:
+            parts.append(f"{a.grid.tempo:.1f} BPM")
+        if s.has_key and a.key.key_summary:
+            dom = a.key.key_summary.dominant
+            if dom.key_name:
+                parts.append(f"{dom.camelot}  {dom.key_name}")
+        loudness = a.loudness if s.has_bpm else None
+        if loudness and loudness.loudness_dbfs is not None:
+            loud = f"{loudness.loudness_dbfs:+.1f} dBFS"
+            if loudness.lufs is not None:
+                loud += f" / {loudness.lufs:+.1f} LUFS"
+            if loudness.peak_dbfs is not None and loudness.peak_dbfs > -0.1:
                 loud += " \u26A0"  # warning sign for clipping
             parts.append(loud)
         if s.has_events and s.events:
@@ -2330,23 +2102,19 @@ class AudioAnalysisApp:
             return
 
         def do():
-            d = detect_beats(str(self.audio_path), sr=44100,
-                             hop_length=self.hop_length)
-            phase = d.get("downbeat_phase", 0)
-            m = group_beats_into_measures(d["beat_times"],
-                                           self.beats_per_bar, phase=phase)
-            sp = compute_span_bpm(d["beat_times"], 8)
-            seg = find_bpm_segments(m, tolerance=2.0, min_segment_bars=4)
-            return {"y": d["y"], "sr": d["sr"],
-                    "beat_times": d["beat_times"], "tempo": d["tempo"],
-                    "downbeat_phase": phase,
-                    "bars_trimmed": d.get("bars_trimmed", 0),
-                    "measures": m, "span_data": sp, "segments": seg}
+            return analyze.analyze_track(
+                self.audio_path, LibrosaLoader(), PyloudnormMeter(), sr=44100,
+                hop_length=self.hop_length, beats_per_bar=self.beats_per_bar)
 
         self._run_in_thread(do, self._on_bpm, "Running BPM analysis...")
 
     def _on_bpm(self, r):
-        self.store.store_bpm(r)
+        prev = self.store.analysis
+        if prev is not None:
+            # A new grid keeps the earlier key/event/spectrum results, as before
+            r.key, r.events, r.spectrum = prev.key, prev.events, prev.spectrum
+        self.store.analysis = r
+        self.store.changed()
         self.builder.invalidate()
         self._invalidate_chart_widgets()
         self.seek_slider.config(to=self.store.duration)
@@ -2363,14 +2131,15 @@ class AudioAnalysisApp:
         self.btn_events.config(state="normal")
         self._apply_safe_volume()
         self._update_marker_buttons()
-        bpm = f"{self.store.tempo:.1f}" if self.store.tempo else "?"
-        phase_info = (f"  |  downbeat phase: {self.store.downbeat_phase}"
-                      if self.store.downbeat_phase > 0 else "")
-        trim_info = (f"  |  trimmed {self.store.bars_trimmed} intro bar(s)"
-                     if self.store.bars_trimmed > 0 else "")
+        grid = self.store.analysis.grid
+        bpm = f"{grid.tempo:.1f}" if grid.tempo else "?"
+        phase_info = (f"  |  downbeat phase: {grid.downbeat_phase}"
+                      if grid.downbeat_phase > 0 else "")
+        trim_info = (f"  |  trimmed {grid.bars_trimmed} intro bar(s)"
+                     if grid.bars_trimmed > 0 else "")
         self._set_status(
-            f"BPM: {bpm}  |  {len(self.store.measures)} measures  |  "
-            f"{len(self.store.segments)} seg(s){phase_info}{trim_info}")
+            f"BPM: {bpm}  |  {len(grid.measures)} measures  |  "
+            f"{len(grid.segments)} seg(s){phase_info}{trim_info}")
         self._update_info()
 
     # ------------------------------------------------------------------
@@ -2383,21 +2152,13 @@ class AudioAnalysisApp:
             return
 
         def do():
-            s = self.store
-            mk = compute_measure_chroma(s.y, s.sr, s.measures,
-                                         use_harmonic=True)
-            ph = compute_phrase_chroma(s.y, s.sr, s.measures,
-                                        phrase_bars=self.phrase_bars,
-                                        use_harmonic=True)
-            seg = find_key_segments(ph, min_segment_phrases=2)
-            sm = key_compute_summary(seg, ph, s.duration)
-            return {"measure_keys": mk, "phrases": ph,
-                    "segments": seg, "summary": sm}
+            return analyze.analyze_key(self.store.analysis, phrase_bars=self.phrase_bars)
 
         self._run_in_thread(do, self._on_key, "Running Key analysis...")
 
     def _on_key(self, r):
-        self.store.store_key(r)
+        self.store.analysis.key = r
+        self.store.changed()
         self.builder.invalidate(CHART_WAVEFORM, CHART_KEY_TIMELINE,
                                 CHART_KEY_CONFIDENCE)
         self._invalidate_chart_widgets(CHART_WAVEFORM, CHART_KEY_TIMELINE,
@@ -2411,10 +2172,10 @@ class AudioAnalysisApp:
             import traceback
             traceback.print_exc()
             print(f"Cache save error: {e}", file=sys.stderr)
-        dom = r["summary"].get("dominant", {})
+        dom = r.key_summary.dominant if r.key_summary else None
         self._set_status(
-            f'Key: {dom.get("key_name","?")} ({dom.get("camelot","?")})  |  '
-            f'{len(r["segments"])} seg(s)')
+            f'Key: {dom.key_name if dom else "?"} ({dom.camelot if dom else "?"})  |  '
+            f'{len(r.key_segments)} seg(s)')
         self._update_info()
 
     # ------------------------------------------------------------------
@@ -2427,46 +2188,14 @@ class AudioAnalysisApp:
             return
 
         def do():
-            s = self.store
-            stems_dir, stem_paths = find_or_create_stems(
-                str(self.audio_path))
-            if stem_paths:
-                import librosa as _lr
-                se = {}
-                for sn, sp in stem_paths.items():
-                    ys, _ = _lr.load(sp, sr=s.sr, mono=True)
-                    se[sn] = compute_stem_phrase_energy(
-                        ys, s.sr, s.measures, phrase_bars=self.phrase_bars)
-                spr = compute_stem_presence(se, presence_threshold=0.15)
-                phrases = []
-                for i in range(0, len(s.measures), self.phrase_bars):
-                    g = s.measures[i:i + self.phrase_bars]
-                    if g:
-                        phrases.append({
-                            "phrase_num": len(phrases) + 1,
-                            "start_bar": g[0]["measure_num"],
-                            "end_bar": g[-1]["measure_num"],
-                            "start": g[0]["start"], "end": g[-1]["end"]})
-                ev = detect_stem_events(spr, phrases, min_gap_phrases=2)
-                mode = "stems"
-                extra = {"stem_energies": se, "stem_presence": spr}
-            else:
-                bf = compute_bar_features(s.y, s.sr, s.measures)
-                phrases = compute_phrase_features(
-                    bf, phrase_bars=self.phrase_bars)
-                ev = detect_feature_events(
-                    phrases, context=2, min_score=0.15,
-                    min_features=2, min_gap_phrases=2, bar_features=bf)
-                mode = "features"
-                extra = {}
-            sm = event_compute_summary(ev, phrases, s.duration, mode=mode)
-            return {"events": ev, "phrases": phrases,
-                    "mode": mode, "summary": sm, **extra}
+            return analyze.analyze_events(self.store.analysis, self.audio_path, StemFolder(),
+                                          LibrosaLoader(), phrase_bars=self.phrase_bars)
 
         self._run_in_thread(do, self._on_events, "Running Event analysis...")
 
     def _on_events(self, r):
-        self.store.store_events(r)
+        self.store.analysis.events = r
+        self.store.changed()
         # Invalidate waveform + all event-related charts (features + stems)
         ev_charts = [CHART_WAVEFORM] + _GROUP_EVENTS_FEATURES
         stem_charts = [n for n in self._chart_widgets
@@ -2484,7 +2213,7 @@ class AudioAnalysisApp:
             print(f"Cache save error: {e}", file=sys.stderr)
         self.btn_add_event.config(state="normal")
         self._set_status(
-            f'Events ({r["mode"]}): {len(r["events"])} detected')
+            f'Events ({r.event_mode}): {len(r.events)} detected')
         self._update_info()
 
     # ------------------------------------------------------------------
@@ -2497,19 +2226,14 @@ class AudioAnalysisApp:
             return
 
         def do():
-            s = self.store
-            r = compute_bar_spectra(s.y, s.sr, s.measures)
-            summary = compute_spectral_summary(r)
-            return {"bar_spectra": r["bar_spectra"],
-                    "band_centers": r["band_centers"],
-                    "band_edges": r["band_edges"],
-                    "summary": summary}
+            return analyze.analyze_spectrum(self.store.analysis)
 
         self._run_in_thread(do, self._on_spectrum,
                             "Running Spectral analysis...")
 
     def _on_spectrum(self, r):
-        self.store.store_spectrum(r)
+        self.store.analysis.spectrum = r
+        self.store.changed()
         self.builder.invalidate(CHART_SPECTRAL)
         self._invalidate_chart_widgets(CHART_SPECTRAL)
         self._update_view_selector()
@@ -2520,8 +2244,7 @@ class AudioAnalysisApp:
             import traceback
             traceback.print_exc()
             print(f"Cache save error: {e}", file=sys.stderr)
-        summary = r["summary"]
-        self._set_status(f'Spectrum: {summary["energy_profile"]}')
+        self._set_status(f'Spectrum: {r.summary.energy_profile}')
         self._update_info()
 
     # ------------------------------------------------------------------
@@ -2575,15 +2298,17 @@ class AudioAnalysisApp:
                 if fig:
                     fig.savefig(str(d / fname), dpi=150,
                                  bbox_inches="tight")
+            tempo = s.analysis.grid.tempo
             with open(d / "key_analysis.json", "w") as f:
                 json.dump({"file": self.audio_path.name,
                            "duration": round(s.duration, 2),
-                           "bpm": round(s.tempo, 2) if s.tempo else None,
-                           "summary": s.key_summary,
-                           "segments": s.key_segments}, f, indent=2)
+                           "bpm": round(tempo, 2) if tempo else None,
+                           "summary": to_plain(s.analysis.key.key_summary) or {},
+                           "segments": to_plain(s.analysis.key.key_segments)}, f, indent=2)
         elif which == "events":
-            if s.event_mode == "stems" and s.event_extra:
-                se = s.event_extra.get("stem_energies", {})
+            extra = s.analysis.events.event_extra
+            if s.event_mode == "stems" and extra:
+                se = extra.stem_energies or {}
                 for stem in sorted(se.keys()):
                     fig = self.builder.get(f"{_STEM_PREFIX}{stem}")
                     if fig:
@@ -2600,12 +2325,13 @@ class AudioAnalysisApp:
                     if fig:
                         fig.savefig(str(d / fname), dpi=150,
                                      bbox_inches="tight")
+            tempo = s.analysis.grid.tempo
             with open(d / "event_analysis.json", "w") as f:
                 json.dump({"file": self.audio_path.name,
                            "duration": round(s.duration, 2),
-                           "bpm": round(s.tempo, 2) if s.tempo else None,
-                           "summary": s.event_summary,
-                           "events": s.events}, f, indent=2)
+                           "bpm": round(tempo, 2) if tempo else None,
+                           "summary": to_plain(s.analysis.events.event_summary),
+                           "events": to_plain(s.events)}, f, indent=2)
 
     # ------------------------------------------------------------------
     # Playback
@@ -2690,15 +2416,21 @@ class AudioAnalysisApp:
         v = float(val)
         pygame.mixer.music.set_volume(v)
         pct = int(round(v * 100))
-        safe = self.store.safe_volume
+        safe = self._safe_volume()
         if v > safe + 0.005 and safe < 1.0:
             self.volume_pct.config(text=f"{pct}%", foreground="#cc2222")
         else:
             self.volume_pct.config(text=f"{pct}%", foreground="")
 
+    def _safe_volume(self):
+        s = self.store
+        if s.has_bpm and s.analysis.loudness.safe_volume is not None:
+            return s.analysis.loudness.safe_volume
+        return 1.0
+
     def _apply_safe_volume(self):
         """Set volume slider to safe level and update the clip-zone marker."""
-        safe = self.store.safe_volume
+        safe = self._safe_volume()
         self.volume_slider.set_safe(safe)
         # Auto-set to safe volume (user can still raise it)
         self.volume_var.set(safe)
@@ -2720,7 +2452,7 @@ class AudioAnalysisApp:
         measures = self.store.measures
         if not measures:
             return (t, 0)
-        starts = [m["start"] for m in measures]
+        starts = [m.start for m in measures]
         idx = bisect.bisect_right(starts, t)
         # Compare candidate on the left and right
         best_idx = 0
@@ -2734,7 +2466,7 @@ class AudioAnalysisApp:
             else:
                 best_idx = idx - 1
         m = measures[best_idx]
-        return (m["start"], m["measure_num"])
+        return (m.start, m.measure_num)
 
     def _snap_to_phrase(self, t):
         """Return (snapped_time, bar_num) for the nearest phrase boundary."""
@@ -2743,7 +2475,7 @@ class AudioAnalysisApp:
             return (t, 0)
         pb = self.phrase_bars
         phrase_measures = [measures[i] for i in range(0, len(measures), pb)]
-        starts = [m["start"] for m in phrase_measures]
+        starts = [m.start for m in phrase_measures]
         idx = bisect.bisect_right(starts, t)
         best_idx = 0
         if idx == 0:
@@ -2756,17 +2488,17 @@ class AudioAnalysisApp:
             else:
                 best_idx = idx - 1
         m = phrase_measures[best_idx]
-        return (m["start"], m["measure_num"])
+        return (m.start, m.measure_num)
 
     def _time_to_bar(self, t):
         """Return the bar number that contains time t."""
         measures = self.store.measures
         if not measures:
             return 0
-        starts = [m["start"] for m in measures]
+        starts = [m.start for m in measures]
         idx = bisect.bisect_right(starts, t) - 1
         idx = max(0, min(idx, len(measures) - 1))
-        return measures[idx]["measure_num"]
+        return measures[idx].measure_num
 
     def _bar_to_time(self, bar_num):
         """Return the start time of a given bar number."""
@@ -2774,10 +2506,10 @@ class AudioAnalysisApp:
         if not measures:
             return 0.0
         for m in measures:
-            if m["measure_num"] == bar_num:
-                return m["start"]
+            if m.measure_num == bar_num:
+                return m.start
         # If bar_num exceeds last measure, return last measure start
-        return measures[-1]["start"]
+        return measures[-1].start
 
     def _snap_time(self, t):
         """Apply global snap setting. Returns (snapped_time, bar_num)."""
@@ -2794,9 +2526,9 @@ class AudioAnalysisApp:
     # ------------------------------------------------------------------
 
     def _add_event(self, event_dict):
-        """Append a new event and refresh."""
-        self.store.events.append(event_dict)
-        self.store.events.sort(key=lambda e: e["time"])
+        """Append a new event (an EventDialog result) and refresh."""
+        self.store.events.append(from_plain(Event, event_dict))
+        self.store.events.sort(key=lambda e: e.time)
         self._refresh_after_event_edit()
 
     def _edit_event(self, old_event, new_dict):
@@ -2806,14 +2538,14 @@ class AudioAnalysisApp:
         except ValueError:
             # Fallback: match by time + type
             for i, e in enumerate(self.store.events):
-                if (abs(e["time"] - old_event["time"]) < 0.01
-                        and e["type"] == old_event["type"]):
+                if (abs(e.time - old_event.time) < 0.01
+                        and e.type == old_event.type):
                     idx = i
                     break
             else:
                 return
-        self.store.events[idx] = new_dict
-        self.store.events.sort(key=lambda e: e["time"])
+        self.store.events[idx] = from_plain(Event, new_dict)
+        self.store.events.sort(key=lambda e: e.time)
         self._refresh_after_event_edit()
 
     def _delete_event(self, event):
@@ -2822,18 +2554,19 @@ class AudioAnalysisApp:
             self.store.events.remove(event)
         except ValueError:
             # Fallback: match by time + type
-            self.store.events = [
+            self.store.analysis.events.events = [
                 e for e in self.store.events
-                if not (abs(e["time"] - event["time"]) < 0.01
-                        and e["type"] == event["type"])
+                if not (abs(e.time - event.time) < 0.01
+                        and e.type == event.type)
             ]
         self._refresh_after_event_edit()
 
     def _refresh_after_event_edit(self):
         """Rebuild charts and save after any event add/edit/delete."""
         s = self.store
-        s.event_summary = event_compute_summary(
-            s.events, s.event_phrases, s.duration, mode=s.event_mode)
+        ev = s.analysis.events
+        ev.event_summary = event_compute_summary(
+            ev.events, ev.event_phrases, s.duration, mode=ev.event_mode)
         s.version += 1
 
         # Invalidate charts that show events
@@ -2941,7 +2674,7 @@ class AudioAnalysisApp:
         event_dist = float("inf")
         if self.store.has_events:
             for e in self.store.events:
-                d = abs(e["time"] - click_t)
+                d = abs(e.time - click_t)
                 if d < event_dist:
                     nearest_event = e
                     event_dist = d
@@ -2974,7 +2707,7 @@ class AudioAnalysisApp:
     def _show_event_context_menu(self, event, screen_x, screen_y):
         """Show right-click context menu for an existing event."""
         menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(label=f"Edit \"{event['type']}\" (bar {event['bar']})...",
+        menu.add_command(label=f"Edit \"{event.type}\" (bar {event.bar})...",
                          command=lambda: self._open_edit_dialog(event))
         menu.add_separator()
         menu.add_command(label="Delete Event",
@@ -3150,7 +2883,7 @@ class AudioAnalysisApp:
         """Open EventDialog in edit mode for an existing event."""
         dlg = EventDialog(self.root, self.store, self.phrase_bars,
                           self.snap_var,
-                          title="Edit Event", event=event)
+                          title="Edit Event", event=to_plain(event))
         self.root.wait_window(dlg)
         if dlg.result:
             self._edit_event(event, dlg.result)
@@ -3159,7 +2892,7 @@ class AudioAnalysisApp:
         """Ask for confirmation, then delete."""
         if messagebox.askyesno(
                 "Delete Event",
-                f'Delete "{event["type"]}" at bar {event["bar"]}?'):
+                f'Delete "{event.type}" at bar {event.bar}?'):
             self._delete_event(event)
 
     def _add_event_at_playhead(self):
@@ -3175,8 +2908,9 @@ class AudioAnalysisApp:
 
     def _bars_to_seconds(self, n_bars):
         """Convert a bar count to approximate seconds using current tempo."""
-        if self.store.tempo and self.store.tempo > 0:
-            secs_per_beat = 60.0 / self.store.tempo
+        tempo = self.store.analysis.grid.tempo if self.store.has_bpm else None
+        if tempo and tempo > 0:
+            secs_per_beat = 60.0 / tempo
             return n_bars * self.beats_per_bar * secs_per_beat
         return n_bars * 2.0  # fallback ~120 BPM
 
