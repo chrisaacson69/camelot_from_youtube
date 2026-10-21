@@ -8,8 +8,13 @@ dead after the machine migration).
 
 **Downstream consumer:** logical name `CyborgDJ` — consumes this repo's per-track analysis output. NOTE: it
 currently holds a *stale partial copy* under `CyborgDJ/camelot/<track>/` rather than depending on this repo,
-and `collision.py` / `rekordbox_export.py` are forked into `CyborgDJ/scripts/`. Planned fix is a shared
-schema package (`dj-score`) both sides depend on. Do not deepen the duplication.
+and `collision.py` / `rekordbox_export.py` are forked into `CyborgDJ/scripts/`. Do not deepen the duplication.
+
+**Shared library — `dj-score` (exists, 2026-10-21):** logical name `dj-score`, sibling `../dj-score`,
+`chrisaacson69/dj-score`. All analysis code is migrating there (copy → repoint → delete); this repo keeps
+the Tk UI and per-track data and becomes a consumer, as CyborgDJ will. **The per-module keep / fold /
+retire verdicts and the migration order live in `../dj-score/MIGRATION.md`** — read it before touching
+any analysis module here, and add new analysis code to dj-score, never to this repo.
 
 ## Project Overview
 
