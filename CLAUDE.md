@@ -6,9 +6,10 @@ dead after the machine migration).
 
 **Related research:** `Vault/research/dj-eq-blending.md`, `Vault/research/programmatic-dj-mixing-tools.md`.
 
-**Downstream consumer:** logical name `CyborgDJ` — consumes this repo's per-track analysis output. NOTE: it
-currently holds a *stale partial copy* under `CyborgDJ/camelot/<track>/` rather than depending on this repo,
-and `collision.py` / `rekordbox_export.py` are forked into `CyborgDJ/scripts/`. Do not deepen the duplication.
+**Data lives in the shared music library** (logical name `music`, sibling `../music`, local only, never
+pushed): originals at its top level, each track's analysis under `analysis/<name>/` (dj-score's
+`adapters/library` owns that layout; the UI opens a track's project there). CyborgDJ reads the same library
+since 2026-10-22; its old copies and forks of this repo's code are gone.
 
 **Shared library — `dj-score` (exists, 2026-10-21):** logical name `dj-score`, sibling `../dj-score`,
 `chrisaacson69/dj-score`. All analysis code is migrating there (copy → repoint → archive; nothing is
@@ -18,8 +19,9 @@ migration order live in `../dj-score/MIGRATION.md`** — read it before touching
 and add new analysis code to dj-score, never to this repo.
 
 **`audio_ui.py` runs on dj-score (2026-10-21).** Its store holds a dj-score `TrackAnalysis`; BPM/key/events/
-spectrum/export call `dj_score.services`. The old analysis modules here are no longer imported by the UI
-but stay until archiving. Install into `env1` with **`pip install --no-deps -e ../dj-score`**: `--no-deps`
+spectrum/export call `dj_score.services`. **The old analysis modules are archived (2026-10-22)** in
+`archive/<tool>/`, with their outputs. The whole archive is local (gitignored; git history keeps the code);
+see `archive/README.md`. Their CLIs are `dj-score` subcommands now, including Rekordbox export. Install into `env1` with **`pip install --no-deps -e ../dj-score`**: `--no-deps`
 keeps env1's pinned numpy/librosa. `tests/ui_repoint_oracle.py` replays one scripted session through the
 pre-repoint UI (from git) and the current one and requires identical caches, detail files, chart pixels and
 text; run it after any UI change that should not alter behaviour.
@@ -44,33 +46,16 @@ text; run it after any UI change that should not alter behaviour.
 
 ```
 camelot_from_youtube/
-├── audio_ui.py               # Tkinter GUI - main application
-├── camelot_from_youtube.py   # Original CLI for key detection
-├── rekordbox_export.py       # Rekordbox XML export (CLI + library)
-├── bpm_detect.py             # BPM and beat grid detection
-├── key_detect.py             # Key/Camelot detection (timeline, consensus)
-├── detect_events.py          # Feature-based event detection
-├── detect_stem_events.py     # Stem-based event detection
-├── event_detect.py           # Event detection orchestrator
-├── separate_stems.py         # Demucs stem separation (htdemucs / _ft / _6s); --float = unclamped 32-bit stems
-├── resum_check.py            # Stems re-sum to the mix? residual dB, clipping, energy share per stem (G7 check 1)
-├── analyze_stems.py          # Stem energy analysis
-├── analyze_onset_drops.py    # Onset/drop analysis
-├── spectral_analysis.py      # Per-bar 31-band ISO-266 third-octave energy -> (n_bars, 31) dBFS matrix
-├── collision.py              # Two-track spectral collision in transition zones; suggests EQ crossovers
-├── alignment.py              # Beat/bar alignment between two tracks
-├── rhythm_detect.py          # Rhythm / meter analysis
-├── visualize_audio.py        # Audio visualization helpers
-├── visualize_stems.py        # Stem visualization
-├── visualize_timeline.py     # Key timeline visualization
-├── check_beats.py            # Beat grid validation utility
+├── audio_ui.py               # Tkinter GUI - main application (runs on dj-score)
+├── bench/                    # beat-grid benchmark against Rekordbox (its own README)
+├── tests/ui_repoint_oracle.py # old-vs-new UI replay oracle
+├── archive/<tool>/           # retired tools + their outputs (local only, gitignored)
 ├── CLAUDE.md                 # This file
 ├── .env                      # API keys (not committed)
 ├── .env.example              # Template for .env
 ├── rekordbox_collection.xml  # Accumulating Rekordbox export file
-├── env1/                     # Active virtual environment
-└── <track_name>/             # Per-track project directories
-    └── analysis_cache.json   # Persisted analysis data
+└── env1/                     # Active virtual environment
+(per-track data: ../music/analysis/<track>/analysis_cache.*, in the shared music library)
 ```
 
 ## Development Setup
@@ -111,14 +96,14 @@ Central data model (`AnalysisStore` class in audio_ui.py). Holds all analysis re
 - `events` — list of event dicts with `time`, `bar`, `type`, `description`, `score`, `cue`, `source`
 - `duration` — track length in seconds
 
-## Rekordbox Export (rekordbox_export.py)
+## Rekordbox Export (dj-score `export`; the UI's File menu)
 
 ### Accumulating XML
 All exports write to a single XML file (`rekordbox_collection.xml` in project folder). Rekordbox is pointed at this file once via Preferences > Advanced > rekordbox xml. Re-exporting a track replaces its entry (matched by file path).
 
 ### CLI Usage
 ```bash
-python rekordbox_export.py --project "Alone (Extended Mix)" --audio "Alone (Extended Mix).mp3"
+dj-score export --project "../music/analysis/Alone (Extended Mix)" --audio "../music/Alone (Extended Mix).mp3" --output rekordbox_collection.xml
 ```
 
 ### Cue Point Logic
@@ -144,7 +129,7 @@ python rekordbox_export.py --project "Alone (Extended Mix)" --audio "Alone (Exte
 2. Preferences > View > Layout — enable rekordbox xml panel in sidebar
 3. Right-click imported tracks > Import to Collection
 
-## Key Detection (camelot_from_youtube.py / key_detect.py)
+## Key Detection (now dj-score `domain/key`; CLIs `dj-score key | key-window | timeline`)
 
 ### Algorithm
 1. Load audio segment via librosa
@@ -161,23 +146,15 @@ python rekordbox_export.py --project "Alone (Extended Mix)" --audio "Alone (Exte
 - **Consensus** — multiple time windows with strict voting
 - **Timeline** — bar-aligned segments detecting key changes over time
 
-## CLI Arguments (camelot_from_youtube.py)
+## Command-line tools
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--audio` | required | Path to audio file |
-| `--consensus` | false | Multi-window consensus analysis |
-| `--timeline` | false | Timeline analysis (key changes) |
-| `--bpm` | none | BPM (number or "auto") |
-| `--bar-start` | none | Starting bar for consensus windows |
-| `--bars-per-segment` | 8 | Bars per segment for timeline |
-| `--full-track-beats` | false | Full track beat analysis (slower) |
-| `--json-out` | none | Write JSON output to file |
-| `--url` | none | YouTube URL for metadata |
+The old CLIs (`camelot_from_youtube.py`, `bpm_detect.py`, `key_detect.py`, …) are archived. Their
+replacements are `dj-score` subcommands, which take the same arguments (`dj-score <cmd> --help`); the
+mapping and the deliberate differences are in `../dj-score/MIGRATION.md` step 5.
 
 ## Important Notes
 
 - Avoid `.weba`/`.webm`/`.opus` formats (require ffmpeg which may not be available)
 - Harmonic-only analysis (default) works better for EDM/electronic music
-- Per-track data lives in `<track_name>/analysis_cache.json` — this is the source of truth for all analysis
+- Per-track data lives in `../music/analysis/<track>/analysis_cache.json` (the shared music library): the source of truth for all analysis
 - The `rekordbox_collection.xml` file accumulates across exports — no need to reconfigure Rekordbox

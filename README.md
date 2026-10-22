@@ -62,23 +62,16 @@ python audio_ui.py
 
 Load an audio file, run BPM/key/event detection from the UI, edit events by right-clicking markers on the waveform, and export to Rekordbox via the File menu.
 
-### CLI -- Key Detection
+### Command line
+
+The analysis CLIs moved to [dj-score](https://github.com/chrisaacson69/dj-score); the originals are
+in `archive/`. For example:
 
 ```bash
-# Basic key detection
-python camelot_from_youtube.py --audio "track.mp3"
-
-# Multi-window consensus mode
-python camelot_from_youtube.py --audio "track.mp3" --consensus --bpm auto
-
-# Timeline mode (detects key changes over time)
-python camelot_from_youtube.py --audio "track.mp3" --timeline --bpm auto
-```
-
-### CLI -- Rekordbox Export
-
-```bash
-python rekordbox_export.py --project "Track Name" --audio "Track Name.mp3"
+dj-score key-window "track.mp3"                          # single-window key
+dj-score key-window "track.mp3" --consensus --bpm auto   # multi-window consensus
+dj-score timeline "track.mp3"                            # key changes over time
+dj-score export --project "Track Name" --audio "Track Name.mp3" --output rekordbox_collection.xml
 ```
 
 ## Rekordbox Integration

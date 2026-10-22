@@ -284,3 +284,6 @@ rekordbox_collection.xml
 
 env_mir/
 bench/results/
+
+# Local archive of retired tools and their outputs (not published; history keeps the code)
+archive/
