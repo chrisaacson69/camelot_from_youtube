@@ -54,7 +54,8 @@ camelot_from_youtube/
 ├── .env                      # API keys (not committed)
 ├── .env.example              # Template for .env
 ├── rekordbox_collection.xml  # Accumulating Rekordbox export file
-└── env1/                     # Active virtual environment
+├── env1/                     # The UI environment (librosa 0.11, matplotlib, pygame, pyrekordbox, dj-score --no-deps)
+└── env_mir/                  # The one GPU/ML environment: beat_this + Demucs on CUDA 12.8 (recipe: bench/requirements-mir.txt)
 (per-track data: ../music/analysis/<track>/analysis_cache.*, in the shared music library)
 ```
 

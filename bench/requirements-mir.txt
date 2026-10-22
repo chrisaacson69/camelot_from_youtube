@@ -1,0 +1,16 @@
+# env_mir: the one GPU/ML environment (beat_this downbeats, Demucs stem separation).
+# Recreate on any machine:
+#   py -3.14 -m venv env_mir
+#   env_mir\Scripts\pip install -r bench\requirements-mir.txt
+# CUDA 12.8 wheels run on both RTX 30-series (Ampere) and RTX 50-series (Blackwell, which needs >= 12.8),
+# so one recipe serves both machines; the bigger card just fits longer Demucs segments.
+# Verified 2026-10-22 on an RTX 3050 Laptop GPU (4 GB): htdemucs stems match the old env_demucs
+# (torch 2.5.1 cu121) to 63-77 dB below each stem.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128
+beat-this @ git+https://github.com/CPJKU/beat_this.git@b95c8ab0c58c2d9fcfd40508ae8dffbc05ac4f5c
+demucs==4.1.0
+librosa==1.0.0
+mir_eval==0.8.2
+soundfile==0.14.0

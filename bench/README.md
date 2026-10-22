@@ -21,5 +21,5 @@ analysis. The other 11 were imported from this repo's own `rekordbox_collection.
 Rekordbox before treating them as references. Findings are written up in the vault:
 `research/dj-blend-tool-test-plan.md` → Phase 3 results.
 
-`env_mir` = Python 3.14 + torch 2.11 cu128 + `beat_this` (git). `allin1` is not runnable here:
+`env_mir` = Python 3.14 + torch 2.11 cu128 + `beat_this` (git) + Demucs: the one GPU/ML environment (it absorbed `env_demucs` on 2026-10-22). Recipe: `requirements-mir.txt`. `allin1` is not runnable here:
 NATTEN ships no Windows wheels and there is no CUDA toolkit on this machine.
