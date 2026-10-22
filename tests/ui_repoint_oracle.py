@@ -6,7 +6,8 @@ Runs one scripted session through the pre-repoint UI (audio_ui.py at REFERENCE, 
 from git) and through the working-copy UI, on temporary copies of a few tracks, and
 compares everything each side persists or renders: analysis caches, detail JSON,
 detail PNGs and chart figures (pixels), status and info text, snapping, event
-add/edit/delete, and the Rekordbox export. camelot's own track folders and its
+add/edit/delete, and the Rekordbox export. Tracks are copied from the music library
+(DJ_SCORE_MUSIC, default the sibling `../music`); the library and camelot's
 rekordbox_collection.xml are never touched. Nothing is screen-captured; figures are
 rendered by the app's own matplotlib code.
 
@@ -19,6 +20,7 @@ import argparse
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -30,8 +32,11 @@ from urllib.parse import unquote
 
 import numpy as np
 
+from dj_score.adapters import library
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+MUSIC = Path(os.environ.get("DJ_SCORE_MUSIC", ROOT.parent / "music"))
 
 import matplotlib  # noqa: E402
 matplotlib.use("TkAgg")
@@ -40,10 +45,10 @@ import tkinter as tk  # noqa: E402
 
 REFERENCE = "150422a"  # last commit before the repoint
 
-# (audio file, extra folder to copy beside it, run the full BPM analysis too)
+# (audio file, copy its stems too, run the full BPM analysis too)
 TRACKS = [
     ("NL123D.wav", None, True),                                         # features mode
-    ("Waves.mp3", "Waves_stems", False),                                # stems mode
+    ("Waves.mp3", True, False),                                         # stems mode
     ("Quivver - Brothers & Sisters (Original Mix).mp3", None, False),   # spectrum
     ("Kasablanca - Am I Dreaming？ (@Kasablanca).mp3", None, False),  # legacy cache: no loudness keys
 ]
@@ -57,10 +62,16 @@ def load_module(name, source_path):
 
 
 def reference_module(rev, workdir):
-    src = subprocess.run(["git", "-C", str(ROOT), "show", f"{rev}:audio_ui.py"],
+    """The UI at `rev`, importing that revision's modules too (they are archived since)."""
+    import tarfile
+    tar = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar", rev],
                          capture_output=True, check=True).stdout
+    tree = workdir / f"tree_{rev}"
+    with tarfile.open(fileobj=io.BytesIO(tar)) as t:
+        t.extractall(tree, filter="data")
+    sys.path.insert(0, str(tree))
     path = workdir / "audio_ui_reference.py"
-    path.write_bytes(src)
+    shutil.copyfile(tree / "audio_ui.py", path)
     return load_module("audio_ui_reference", path)
 
 
@@ -131,18 +142,18 @@ class Session:
         self.record(key, {"files": files, "status": app.status_var.get(), "info": app.info_var.get()})
 
     def run(self):
-        for audio, extra, run_bpm in TRACKS:
-            if not (ROOT / audio).exists():
-                print(f"  skip {audio}: not present")
-                continue
+        for audio, stems, run_bpm in TRACKS:
+            src = MUSIC / audio
+            if not src.exists():  # a skipped track would make the comparison vacuous
+                raise FileNotFoundError(f"{src} not in the music library")
+            # the old layout (project and stems beside the audio), which both UIs read
             work = self.dir / Path(audio).stem
             work.mkdir()
-            shutil.copy2(ROOT / audio, work / audio)
-            project = ROOT / Path(audio).stem
-            if project.exists():
-                shutil.copytree(project, work / Path(audio).stem)
-            if extra:
-                shutil.copytree(ROOT / extra, work / extra)
+            shutil.copy2(src, work / audio)
+            if library.project_dir(src).exists():
+                shutil.copytree(library.project_dir(src), work / Path(audio).stem)
+            if stems:
+                shutil.copytree(library.stems_dir(src), work / library.stems_dir(src).name)
             self.track(work / audio, run_bpm)
         self.record("dialogs", self.dialogs)
         self.record("rekordbox", collection(self.xml))

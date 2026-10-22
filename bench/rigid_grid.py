@@ -5,7 +5,7 @@ track even though librosa's *tempo estimate* matches Rekordbox to 0.01 BPM.
 Fitting a grid to those drifting beats inherits the drift; taking the phase as
 their circular mean is random. So: take the tempo, and find the phase by
 scoring every candidate offset against the onset-strength envelope directly.
-Downbeat phase then reuses camelot's own estimate_downbeat_phase() on the grid.
+Downbeat phase then reuses camelot's estimate_downbeat_phase() (now in dj-score) on the grid.
 
     python bench/rigid_grid.py                 # tempo from camelot's analysis_cache.json
     python bench/rigid_grid.py --tempo librosa # tempo from librosa.beat.tempo on the fly
@@ -23,12 +23,10 @@ from pathlib import Path
 import librosa
 import numpy as np
 
-from beat_bench import audio_path
+from beat_bench import audio_path, project
+from dj_score.domain.beatgrid import estimate_downbeat_phase
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-sys.path.insert(0, str(ROOT))
-from bpm_detect import estimate_downbeat_phase  # noqa: E402
 
 RESULTS = HERE / "results"
 SR, HOP = 44100, 512
@@ -86,7 +84,7 @@ def main(tempo_source="camelot"):
     for name, info in tracks.items():
         t0 = time.time()
         y, sr = librosa.load(audio_path(info["audio"]), sr=SR, mono=True)
-        cache = ROOT / name / "analysis_cache.json"
+        cache = project(name) / "analysis_cache.json"
         if tempo_source == "camelot" and cache.exists():
             bpm = json.load(io.open(cache, encoding="utf-8"))["tempo"]
         else:
@@ -98,12 +96,12 @@ def main(tempo_source="camelot"):
         off = phase_from_onsets(kick_onsets(y, sr, HOP), sr, HOP, period)
         grid = off + period * np.arange(int((len(y) / sr - off) / period) + 1)
         db = estimate_downbeat_phase(y, sr, grid)
-        downbeats = grid[db["phase"]::4]
+        downbeats = grid[db.phase::4]
         json.dump({"beats": grid.tolist(), "downbeats": downbeats.tolist(), "bpm": bpm,
-                   "phase_s": off, "downbeat_phase": db["phase"], "downbeat_conf": db["confidence"],
+                   "phase_s": off, "downbeat_phase": db.phase, "downbeat_conf": db.confidence,
                    "seconds": time.time() - t0},
                   io.open(out / f"{name}.json", "w", encoding="utf-8"))
-        print(f"  {name[:46]:48} bpm={bpm:8.3f} phase={off:6.3f}s dbphase={db['phase']} conf={db['confidence']:.2f} {time.time()-t0:5.1f}s")
+        print(f"  {name[:46]:48} bpm={bpm:8.3f} phase={off:6.3f}s dbphase={db.phase} conf={db.confidence:.2f} {time.time()-t0:5.1f}s")
 
 
 if __name__ == "__main__":

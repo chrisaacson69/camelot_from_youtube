@@ -33,14 +33,21 @@ WINDOW = 0.07  # seconds; mir_eval default
 
 # ── Reference: Rekordbox ─────────────────────────────────────────────────
 
-AUDIO_DIRS = [ROOT, ROOT.parent / "music"]   # sibling `music/` holds tracks not copied into this repo
+# The music library: originals, plus each track's analysis under analysis/<name>/
+# (dj_score.adapters.library's layout, spelled out here because run_tracker.py imports
+# this module from env_mir, which need not have dj-score installed).
+MUSIC = Path(os.environ.get("DJ_SCORE_MUSIC", ROOT.parent / "music"))
 
 
 def audio_path(name):
-    for d in AUDIO_DIRS:
-        if (d / name).exists():
-            return str(d / name)
-    raise FileNotFoundError(f"{name} not under {[str(d) for d in AUDIO_DIRS]}")
+    if not (MUSIC / name).exists():
+        raise FileNotFoundError(f"{name} not in {MUSIC}")
+    return str(MUSIC / name)
+
+
+def project(name):
+    """camelot's analysis folder for a track."""
+    return MUSIC / "analysis" / name
 
 
 def dump_rekordbox():
@@ -78,7 +85,7 @@ def dump_camelot():
     out = RESULTS / "camelot"
     out.mkdir(parents=True, exist_ok=True)
     for name in json.load(io.open(HERE / "tracks.json", encoding="utf-8")):
-        proj = ROOT / name
+        proj = project(name)
         if not (proj / "analysis_cache.npz").exists():
             print(f"  skip (no camelot analysis): {name[:50]}")
             continue

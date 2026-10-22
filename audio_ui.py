@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 # Analysis lives in dj-score (pip install -e ../dj-score); this file is the UI.
-from dj_score.adapters import cache_store
+from dj_score.adapters import cache_store, library
 from dj_score.adapters.audio import LibrosaLoader
 from dj_score.adapters.loudness import PyloudnormMeter
 from dj_score.adapters.rekordbox_xml import RekordboxXml
@@ -1699,7 +1699,7 @@ class AudioAnalysisApp:
 
         self._stop()
         self.audio_path = path
-        self.project_dir = path.parent / path.stem
+        self.project_dir = library.project_dir(path)  # analysis/<name>/ in the music library
         self.project_dir.mkdir(parents=True, exist_ok=True)
         self.root.title(f"DJ Audio Analysis - {path.name}")
 
